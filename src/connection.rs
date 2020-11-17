@@ -5,6 +5,7 @@ use std::io::{self, Cursor};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 use chainpack::{RpcMessage, ChainPackWriter, Writer, CponWriter};
+use tracing::{debug};
 
 /// Send and receive `Frame` values from a remote peer.
 ///
@@ -72,10 +73,11 @@ impl Connection {
                 // shutdown, there should be no data in the read buffer. If
                 // there is, this means that the peer closed the socket while
                 // sending a frame.
-                if self.buffer.is_empty() {
-                    return Ok(None);
+                //return Err("connection reset by peer".into())
+                return if self.buffer.is_empty() {
+                    Ok(None)
                 } else {
-                    return Err("connection reset by peer".into());
+                    Err("connection reset by peer".into())
                 }
             }
         }
@@ -116,9 +118,12 @@ impl Connection {
                 // but should not impact any other connected client.
                 let result = Frame::parse(&mut buf);
                 match result {
-                   Ok(rpc_msg) => {
+                   Ok(frame) => {
+                       debug!("===>{}", frame);
                        debug_assert_eq!(buf.position() as usize, header_len + msg_len);
-                       Ok(Some(rpc_msg))
+                       let pos = buf.position() as usize;
+                       self.buffer.advance(pos);
+                       Ok(Some(frame))
                    }
                    Err(e) => {
                        // ignore rest of data in case of corrupted message
@@ -155,18 +160,25 @@ impl Connection {
         // Arrays are encoded by encoding each entry. All other frame types are
         // considered literals. For now, mini-redis is not able to encode
         // recursive frame structures. See below for more details.
-        let mut buff = Vec::new();
-        match frame.protocol {
+        debug!("<=== {}", frame);
+        let mut data = Vec::new();
+        match &frame.protocol {
             Protocol::ChainPack => {
-                let mut wr = ChainPackWriter::new(&mut buff);
+                let mut wr = ChainPackWriter::new(&mut data);
                 wr.write(frame.message.as_rpcvalue())?;
             }
             Protocol::Cpon => {
-                let mut wr = CponWriter::new(&mut buff);
+                let mut wr = CponWriter::new(&mut data);
                 wr.write(frame.message.as_rpcvalue())?;
             }
         }
-        self.stream.write_all(&buff).await?;
+        let mut header = Vec::new();
+        let mut wr = ChainPackWriter::new(&mut header);
+        let msg_len = data.len() as u64 + 1;
+        wr.write_uint_data(msg_len)?;
+        header.push(frame.protocol as u8);
+        self.stream.write_all(&header).await?;
+        self.stream.write_all(&data).await?;
         // Ensure the encoded frame is written to the socket. The calls above
         // are to the buffered stream and writes. Calling `flush` writes the
         // remaining contents of the buffer to the socket.

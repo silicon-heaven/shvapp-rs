@@ -28,7 +28,7 @@ pub enum Error {
     Other(crate::Error),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Protocol {
     ChainPack = 1,
     Cpon,
@@ -83,12 +83,15 @@ impl Frame {
         // echo for now
         match (&self.message).create_response() {
             Ok(mut resp) => {
+                /*
                 resp.set_result(RpcValue::new(&format!("Method '{}' called on shvPath: {}"
                                                        , &self.message.method().unwrap_or("")
                                                        , &self.message.shv_path().unwrap_or("")
                 )));
-                debug!(?resp);
-                // Write the response back to the client
+                 */
+                let mut result = chainpack::rpcvalue::Map::new();
+                result.insert("nonce".into(), RpcValue::new("123456"));
+                resp.set_result(RpcValue::new(result));                // Write the response back to the client
                 dst.write_frame(&Frame {protocol: self.protocol, message: resp}).await?;
                 Ok(())
             }

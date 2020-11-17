@@ -10,7 +10,8 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time::{self, Duration};
-use tracing::{debug, error, info, instrument};
+use tracing::{trace, debug, error, info, instrument};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// Server listener state. Created in the `run` call. It includes a `run` method
 /// which performs the TCP listening and initialization of per-connection state.
@@ -37,6 +38,7 @@ struct Listener {
     /// When handlers complete processing a connection, the permit is returned
     /// to the semaphore.
     limit_connections: Arc<Semaphore>,
+    connection_count: AtomicI64,
 
     /// Broadcasts a shutdown signal to all active connections.
     ///
@@ -68,6 +70,7 @@ struct Listener {
 /// commands to `db`.
 #[derive(Debug)]
 struct Handler {
+    client_id: i64,
     /// Shared database handle.
     ///
     /// When a command is received from `connection`, it is applied with `db`.
@@ -142,6 +145,7 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> crate::Result<
         listener,
         db: Db::new(),
         limit_connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+        connection_count: AtomicI64::new(0),
         notify_shutdown,
         shutdown_complete_tx,
         shutdown_complete_rx,
@@ -225,7 +229,7 @@ impl Listener {
     /// itself. One strategy for handling this is to implement a back off
     /// strategy, which is what we do here.
     async fn run(&mut self) -> crate::Result<()> {
-        info!("accepting inbound connections");
+        info!("accepting inbound connections, MAX connection limit: {}", MAX_CONNECTIONS);
 
         loop {
             // Wait for a permit to become available
@@ -245,8 +249,10 @@ impl Listener {
             // error here is non-recoverable.
             let socket = self.accept().await?;
 
+            let client_id = self.connection_count.fetch_add(1, Ordering::SeqCst) + 1;
             // Create the necessary per-connection handler state.
             let mut handler = Handler {
+                client_id,
                 // Get a handle to the shared database. Internally, this is an
                 // `Arc`, so a clone only increments the ref count.
                 db: self.db.clone(),
@@ -267,13 +273,19 @@ impl Listener {
                 // dropped.
                 _shutdown_complete: self.shutdown_complete_tx.clone(),
             };
-
+            info!("Client id: {} connected", handler.client_id);
             // Spawn a new task to process the connections. Tokio tasks are like
             // asynchronous green threads and are executed concurrently.
             tokio::spawn(async move {
                 // Process the connection. If an error is encountered, log it.
-                if let Err(err) = handler.run().await {
-                    error!(cause = ?err, "connection error");
+                match handler.run().await {
+                    Ok(r) => {
+                        info!("Client id: {} disconnected", handler.client_id);
+                    }
+                    Err(err) => {
+                        error!("Client id: {} connection error: {}", handler.client_id, err);
+                        error!(cause = ?err, "connection error");
+                    }
                 }
             });
         }
@@ -340,12 +352,12 @@ impl Handler {
                     return Ok(());
                 }
             };
-
+            //trace!(?maybe_frame);
             // If `None` is returned from `read_frame()` then the peer closed
             // the socket. There is no further work to do and the task can be
             // terminated.
-            let rq = match maybe_frame {
-                Some(rpcmsg) => rpcmsg,
+            let frame = match maybe_frame {
+                Some(frame) => frame,
                 None => return Ok(()),
             };
 
@@ -358,7 +370,7 @@ impl Handler {
             //
             // `tracing` provides structured logging, so information is "logged"
             // as key-value pairs.
-            debug!(?rq);
+            //debug!(?frame);
 
             // Perform the work needed to apply the command. This may mutate the
             // database state as a result.
@@ -367,7 +379,7 @@ impl Handler {
             // command to write response frames directly to the connection. In
             // the case of pub/sub, multiple frames may be send back to the
             // peer.
-            rq.apply(&self.db, &mut self.connection)
+            frame.apply(&self.db, &mut self.connection)
                 .await?;
         }
 
