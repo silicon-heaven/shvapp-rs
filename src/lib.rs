@@ -6,6 +6,8 @@ pub use connection::Connection;
 pub mod frame;
 pub use frame::Frame;
 
+pub mod client;
+
 mod db;
 use db::Db;
 
@@ -23,7 +25,7 @@ use shutdown::Shutdown;
 /// Default port that a redis server listens on.
 ///
 /// Used if no port is specified.
-//pub const DEFAULT_PORT: &str = "3755";
+pub const DEFAULT_PORT: &str = "3755";
 
 /// Error returned by most functions.
 ///

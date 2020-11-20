@@ -55,12 +55,12 @@ impl Connection {
     /// On success, the received frame is returned. If the `TcpStream`
     /// is closed in a way that doesn't break a frame in half, it returns
     /// `None`. Otherwise, an error is returned.
-    pub async fn read_frame(&mut self) -> crate::Result<Option<Frame>> {
+    pub async fn read_frame(&mut self) -> crate::Result<Frame> {
         loop {
             // Attempt to parse a frame from the buffered data. If enough data
             // has been buffered, the frame is returned.
             if let Some(frame) = self.parse_frame()? {
-                return Ok(Some(frame));
+                return Ok(frame);
             }
 
             // There is not enough buffered data to read a frame. Attempt to
@@ -74,11 +74,7 @@ impl Connection {
                 // there is, this means that the peer closed the socket while
                 // sending a frame.
                 //return Err("connection reset by peer".into())
-                return if self.buffer.is_empty() {
-                    Ok(None)
-                } else {
-                    Err("connection reset by peer".into())
-                }
+                return Err("connection reset by peer".into())
             }
         }
     }
@@ -94,20 +90,20 @@ impl Connection {
         // buffer. Cursor also implements `Buf` from the `bytes` crate
         // which provides a number of helpful utilities for working
         // with bytes.
-        let mut buf = Cursor::new(&self.buffer[..]);
+        let mut buff_cursor = Cursor::new(&self.buffer[..]);
 
         // The first step is to check if enough data has been buffered to parse
         // a single frame. This step is usually much faster than doing a full
         // parse of the frame, and allows us to skip allocating data structures
         // to hold the frame data unless we know the full frame has been
         // received.
-        match Frame::check(&mut buf) {
-            Ok(msg_len) => {
+        match Frame::check(&mut buff_cursor) {
+            Ok(frame_len) => {
                 // The `check` function will have advanced the cursor until the
                 // end of the frame. Since the cursor had position set to zero
                 // before `Frame::check` was called, we obtain the length of the
                 // frame by checking the cursor position.
-                let header_len = buf.position() as usize;
+                let header_len = buff_cursor.position() as usize;
 
                 // Parse the frame from the buffer. This allocates the necessary
                 // structures to represent the frame and returns the frame
@@ -116,18 +112,19 @@ impl Connection {
                 // If the encoded frame representation is invalid, an error is
                 // returned. This should terminate the **current** connection
                 // but should not impact any other connected client.
-                let result = Frame::parse(&mut buf);
+                // debug!("check header len: {}", header_len);
+                // debug!("check frame len: {}", frame_len);
+                let result = Frame::parse(&mut buff_cursor, frame_len);
                 match result {
                    Ok(frame) => {
                        debug!("===>{}", frame);
-                       debug_assert_eq!(buf.position() as usize, header_len + msg_len);
-                       let pos = buf.position() as usize;
-                       self.buffer.advance(pos);
+                       let pos = buff_cursor.position() as usize;
+                       self.buffer.advance(frame_len);
                        Ok(Some(frame))
                    }
                    Err(e) => {
                        // ignore rest of data in case of corrupted message
-                       self.buffer.advance(msg_len);
+                       self.buffer.advance(frame_len);
                        return Err(e.into())
                    }
                 }
@@ -161,24 +158,25 @@ impl Connection {
         // considered literals. For now, mini-redis is not able to encode
         // recursive frame structures. See below for more details.
         debug!("<=== {}", frame);
-        let mut data = Vec::new();
+        let mut meta_data = Vec::new();
         match &frame.protocol {
             Protocol::ChainPack => {
-                let mut wr = ChainPackWriter::new(&mut data);
-                wr.write(frame.message.as_rpcvalue())?;
+                let mut wr = ChainPackWriter::new(&mut meta_data);
+                wr.write_meta(&frame.meta)?;
             }
             Protocol::Cpon => {
-                let mut wr = CponWriter::new(&mut data);
-                wr.write(frame.message.as_rpcvalue())?;
+                let mut wr = CponWriter::new(&mut meta_data);
+                wr.write_meta(&frame.meta)?;
             }
         }
         let mut header = Vec::new();
         let mut wr = ChainPackWriter::new(&mut header);
-        let msg_len = data.len() as u64 + 1;
-        wr.write_uint_data(msg_len)?;
+        let msg_len = 1 + meta_data.len() + frame.data.len();
+        wr.write_uint_data(msg_len as u64)?;
         header.push(frame.protocol as u8);
         self.stream.write_all(&header).await?;
-        self.stream.write_all(&data).await?;
+        self.stream.write_all(&meta_data).await?;
+        self.stream.write_all(&frame.data).await?;
         // Ensure the encoded frame is written to the socket. The calls above
         // are to the buffered stream and writes. Calling `flush` writes the
         // remaining contents of the buffer to the socket.

@@ -1,11 +1,11 @@
 use structopt::StructOpt;
 use tokio::signal;
-use shapp::{server};
+use shvapp::{server, DEFAULT_PORT};
 use tracing::{info};
 use std::env;
 
 #[tokio::main]
-pub async fn main() -> shapp::Result<()> {
+pub async fn main() -> shvapp::Result<()> {
     // enable logging
     // see https://docs.rs/tracing for more info
     if env::var("RUST_LOG").is_err() {
@@ -14,7 +14,7 @@ pub async fn main() -> shapp::Result<()> {
     tracing_subscriber::fmt::try_init()?;
 
     let cli = Cli::from_args();
-    let port = cli.port.unwrap_or(3755);
+    let port = cli.port;
     info!("Starting SHV Broker, listenning on port: {}", port);
     // Bind a TCP listener
     let listener = tokio::net::TcpListener::bind(&format!("127.0.0.1:{}", port)).await?;
@@ -27,7 +27,8 @@ struct Cli {
     #[structopt(
         name = "port",
         short = "-p", long = "--port",
-        help = "Plain socket port, set value to enable listening, example: -p 3755"
+        default_value = DEFAULT_PORT,
+        help = "Plain socket port, set value to enable listening, example: -p DEFAULT_PORT"
     )]
-    port: Option<u16>,
+    port: u16,
 }

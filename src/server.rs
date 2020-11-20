@@ -344,7 +344,7 @@ impl Handler {
         while !self.shutdown.is_shutdown() {
             // While reading a request frame, also listen for the shutdown
             // signal.
-            let maybe_frame = tokio::select! {
+            let frame = tokio::select! {
                 res = self.connection.read_frame() => res?,
                 _ = self.shutdown.recv() => {
                     // If a shutdown signal is received, return from `run`.
@@ -356,10 +356,10 @@ impl Handler {
             // If `None` is returned from `read_frame()` then the peer closed
             // the socket. There is no further work to do and the task can be
             // terminated.
-            let frame = match maybe_frame {
-                Some(frame) => frame,
-                None => return Ok(()),
-            };
+            //let frame = match maybe_frame {
+            //    Some(frame) => frame,
+            //    None => return Ok(()),
+            //};
 
             // Logs the `cmd` object. The syntax here is a shorthand provided by
             // the `tracing` crate. It can be thought of as similar to:

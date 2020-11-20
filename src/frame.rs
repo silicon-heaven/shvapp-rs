@@ -2,10 +2,10 @@
 //! parsing frames from a byte array.
 
 use std::fmt;
-use std::io::Cursor;
+use std::io::{Cursor, BufReader};
 use std::num::TryFromIntError;
 use std::string::FromUtf8Error;
-use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, RpcValue};
+use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, RpcValue, MetaMap, ChainPackWriter, CponWriter, Writer};
 use chainpack::RpcMessageMetaTags;
 use crate::db::Db;
 use crate::Connection;
@@ -16,7 +16,8 @@ use bytes::Buf;
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub protocol: Protocol,
-    pub message: RpcMessage,
+    pub meta: MetaMap,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -42,7 +43,39 @@ impl fmt::Display for Protocol {
     }
 }
 impl Frame {
-
+    pub fn new(protocol: Protocol, meta: MetaMap, data: Vec<u8>) -> Frame {
+        Frame{ protocol, meta, data }
+    }
+    pub fn from_rpcmessage(protocol: Protocol, msg: &RpcMessage) -> Frame {
+        let mut data = Vec::new();
+        match &protocol {
+            Protocol::ChainPack => {
+                let mut wr = ChainPackWriter::new(&mut data);
+                wr.write_value(&msg.as_rpcvalue().value());
+            }
+            Protocol::Cpon => {
+                let mut wr = CponWriter::new(&mut data);
+                wr.write_value(&msg.as_rpcvalue().value());
+            }
+        }
+        let meta = msg.as_rpcvalue().meta().clone();
+        Frame{ protocol, meta, data }
+    }
+    pub fn to_rpcmesage(&self) -> Result<RpcMessage, Error> {
+        let mut buff = BufReader::new(&*self.data);
+        let value;
+        match &self.protocol {
+            Protocol::ChainPack => {
+                let mut rd = ChainPackReader::new(&mut buff);
+                value = rd.read_value()?;
+            }
+            Protocol::Cpon => {
+                let mut rd = CponReader::new(&mut buff);
+                value = rd.read_value()?;
+            }
+        }
+        Ok(RpcMessage::new(self.meta.clone(), value))
+    }
     /// Checks if an entire message can be decoded from `src`
     pub fn check(buff: &mut Cursor<&[u8]>) -> Result<usize, Error> {
         // min RpcMessage must have at least 6 bytes
@@ -57,22 +90,31 @@ impl Frame {
         if buff_len < header_len + msg_len {
             return Err(Error::Incomplete)
         }
-        return Ok(msg_len)
+        return Ok(header_len + msg_len)
     }
 
     /// The message has already been validated with `check`.
-    pub fn parse(buff: &mut Cursor<&[u8]>) -> Result<Frame, Error> {
+    pub fn parse(buff: &mut Cursor<&[u8]>, frame_len: usize) -> Result<Frame, Error> {
+        // debug!("parse pos1: {}", buff.position());
         let proto = buff.get_u8();
+        let protocol;
+        let meta;
         if proto == Protocol::ChainPack as u8 {
+            protocol = Protocol::ChainPack;
             let mut rd = ChainPackReader::new(buff);
-            let rv = rd.read()?;
-            return Ok(Frame{protocol: Protocol::ChainPack, message: RpcMessage::from_rpcvalue(rv)?})
+            meta = rd.try_read_meta()?.unwrap();
         } else if proto == Protocol::Cpon as u8 {
+            protocol = Protocol::Cpon;
             let mut rd = CponReader::new(buff);
-            let rv = rd.read()?;
-            return Ok(Frame{protocol: Protocol::Cpon, message: RpcMessage::from_rpcvalue(rv)?})
+            meta = rd.try_read_meta()?.unwrap();
+        } else {
+            return Err(Error::from(format!("Invalid protocol: {}!", proto)))
         }
-        Err(Error::from(format!("Invalid protocol: {}!", proto)))
+        let pos = buff.position() as usize;
+        // debug!("parse pos2: {}", pos);
+        // debug!("parse data len: {}", (frame_len - pos));
+        let data: Vec<u8> = buff.get_ref()[pos .. frame_len].into();
+        return Ok(Frame{protocol, meta, data})
     }
     /// Apply the `Frame` command to the specified `Db` instance.
     ///
@@ -81,8 +123,8 @@ impl Frame {
     #[instrument(skip(self, db, dst))]
     pub(crate) async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
         // echo for now
-        match (&self.message).create_response() {
-            Ok(mut resp) => {
+        match RpcMessage::create_response_meta(&self.meta) {
+            Ok(resp_meta) => {
                 /*
                 resp.set_result(RpcValue::new(&format!("Method '{}' called on shvPath: {}"
                                                        , &self.message.method().unwrap_or("")
@@ -91,8 +133,9 @@ impl Frame {
                  */
                 let mut result = chainpack::rpcvalue::Map::new();
                 result.insert("nonce".into(), RpcValue::new("123456"));
+                let mut resp = RpcMessage::from_meta(resp_meta);
                 resp.set_result(RpcValue::new(result));                // Write the response back to the client
-                dst.write_frame(&Frame {protocol: self.protocol, message: resp}).await?;
+                dst.write_frame(&Frame::from_rpcmessage(self.protocol, &resp)).await?;
                 Ok(())
             }
             Err(e) => {
@@ -108,7 +151,7 @@ impl Frame {
 
 impl fmt::Display for Frame {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "{{proto:{},message:{}}}", self.protocol, self.message)
+        write!(fmt, "{{proto:{}, meta:{}, data len: {}}}", self.protocol, self.meta, self.data.len())
     }
 }
 
