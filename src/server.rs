@@ -3,15 +3,20 @@
 //! Provides an async `run` function that listens for inbound connections,
 //! spawning a task per connection.
 
-use crate::{Connection, Db, Shutdown};
+use crate::{Connection, Db, Shutdown, Frame};
 
 use std::future::Future;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time::{self, Duration};
-use tracing::{trace, debug, error, info, instrument};
+use tracing::{trace, debug, error, info, warn, instrument};
 use std::sync::atomic::{AtomicI64, Ordering};
+use chainpack::{RpcMessageMetaTags, RpcValue, RpcMessage};
+//use rand::Rng;
+use crate::frame::Protocol;
+use rand::Rng;
+use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 
 /// Server listener state. Created in the `run` call. It includes a `run` method
 /// which performs the TCP listening and initialization of per-connection state.
@@ -108,18 +113,6 @@ struct Handler {
     _shutdown_complete: mpsc::Sender<()>,
 }
 
-/// Maximum number of concurrent connections the redis server will accept.
-///
-/// When this limit is reached, the server will stop accepting connections until
-/// an active connection terminates.
-///
-/// A real application will want to make this value configurable, but for this
-/// example, it is hard coded.
-///
-/// This is also set to a pretty low value to discourage using this in
-/// production (you'd think that all the disclaimers would make it obvious that
-/// this is not a serious project... but I thought that about mini-http as
-/// well).
 const MAX_CONNECTIONS: usize = 250;
 
 /// Run the mini-redis server.
@@ -341,50 +334,104 @@ impl Handler {
     async fn run(&mut self) -> crate::Result<()> {
         // As long as the shutdown signal has not been received, try to read a
         // new request frame.
+        match self.client_login().await {
+            Ok(()) => (),
+            Err(e) => {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                return Err(e.into())
+            },
+        }
+
         while !self.shutdown.is_shutdown() {
             // While reading a request frame, also listen for the shutdown
             // signal.
             let frame = tokio::select! {
-                res = self.connection.read_frame() => res?,
+                res = self.connection.read_frame() => {
+                    let frame = res?;
+                    frame
+                }
                 _ = self.shutdown.recv() => {
                     // If a shutdown signal is received, return from `run`.
                     // This will result in the task terminating.
-                    return Ok(());
+                    return Err("Server shutdown".into());
                 }
             };
-            //trace!(?maybe_frame);
-            // If `None` is returned from `read_frame()` then the peer closed
-            // the socket. There is no further work to do and the task can be
-            // terminated.
-            //let frame = match maybe_frame {
-            //    Some(frame) => frame,
-            //    None => return Ok(()),
-            //};
 
-            // Logs the `cmd` object. The syntax here is a shorthand provided by
-            // the `tracing` crate. It can be thought of as similar to:
-            //
-            // ```
-            // debug!(cmd = format!("{:?}", cmd));
-            // ```
-            //
-            // `tracing` provides structured logging, so information is "logged"
-            // as key-value pairs.
-            //debug!(?frame);
-
-            // Perform the work needed to apply the command. This may mutate the
-            // database state as a result.
-            //
-            // The connection is passed into the apply function which allows the
-            // command to write response frames directly to the connection. In
-            // the case of pub/sub, multiple frames may be send back to the
-            // peer.
             frame.apply(&self.db, &mut self.connection)
                 .await?;
         }
 
         Ok(())
     }
+
+    async fn client_login(&mut self) -> crate::Result<()> {
+        let first_frame = self.connection.read_frame().await?;
+        self.connection.protocol = Some(first_frame.protocol);
+        let hello = first_frame.to_rpcmesage()?;
+        debug!("hello: {}", hello);
+        if let Some(method) = hello.method() {
+            if method == "hello" {
+                let nonce: u32 = rand::thread_rng().gen();
+                let mut result = chainpack::rpcvalue::Map::new();
+                result.insert("nonce".into(), RpcValue::new(nonce.to_string()));
+                let mut resp = hello.create_response()?;
+                resp.set_result(RpcValue::new(result));                // Write the response back to the client
+                self.connection.write_message(&resp).await?;
+
+                let login_rq = self.connection.read_frame().await?.to_rpcmesage()?;
+                debug!("login: {}", login_rq);
+                let login_error = loop {
+                    if let Some(method) = login_rq.method() {
+                        if method == "login" {
+                            if let Some(params) = login_rq.params() {
+                                if let Some(login_map) = params.as_map().get("login") {
+                                    if let Some(user) = login_map.as_map().get("user") {
+                                        let user = user.as_str();
+                                        if let Some(password) = login_map.as_map().get("password") {
+                                            let password = password.as_str();
+                                            if user == "iot" && password == "iotpwd" {
+                                                break None
+                                            } else {
+                                                break Some("Bad login user or password")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    break Some("Bad login")
+                };
+                let mut resp = login_rq.create_response()?;
+                match login_error {
+                    None => {
+                        let mut result = chainpack::rpcvalue::Map::new();
+                        result.insert("clientId".into(), RpcValue::new(self.client_id));
+                        resp.set_result(RpcValue::new(result));                // Write the response back to the client
+                    }
+                    Some(err) => {
+                        warn!("Client: {} login error {}", self.client_id, err);
+                        resp.set_error(RpcError::new(RpcErrorCode::InvalidRequest, err));
+                    }
+                }
+                self.connection.write_message(&resp).await?;
+            }
+        }
+        Err("Bad login sequence".into())
+    }
+    // async fn read_frame(&mut self) -> crate::Result<Frame> {
+    //     let frame = tokio::select! {
+    //         res = self.connection.read_frame() => {
+    //             let frame = res?;
+    //             return Ok(frame)
+    //         }
+    //         _ = self.shutdown.recv() => {
+    //             // If a shutdown signal is received, return from `run`.
+    //             // This will result in the task terminating.
+    //             return Err("Server shutdown".into());
+    //         }
+    //     };
+    // }
 }
 
 impl Drop for Handler {

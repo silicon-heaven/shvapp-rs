@@ -1,19 +1,35 @@
 use structopt::StructOpt;
 use tokio::signal;
 use shvapp::{server, DEFAULT_PORT};
-use tracing::{info};
+use tracing::{info, Level};
 use std::env;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::fmt::SubscriberBuilder;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 pub async fn main() -> shvapp::Result<()> {
+    let cli = Cli::from_args();
     // enable logging
     // see https://docs.rs/tracing for more info
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info")
     }
-    tracing_subscriber::fmt::try_init()?;
+    //let format = tracing_subscriber::fmt::format().pretty();
+    //let ts = tracing_subscriber::fmt::try_init();
+    let sb = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env());
+        // filter spans/events with level TRACE or higher.
+        //.with_max_level(Level::DEBUG);
+        //.pretty();
+        //.finish();
+    //let sb2;
+    if cli.verbose == true {
+        sb.pretty().finish().try_init()?;
+    } else {
+        sb.finish().try_init()?;
+    }
 
-    let cli = Cli::from_args();
     let port = cli.port;
     info!("Starting SHV Broker, listenning on port: {}", port);
     // Bind a TCP listener
@@ -31,4 +47,9 @@ struct Cli {
         help = "Plain socket port, set value to enable listening, example: -p DEFAULT_PORT"
     )]
     port: u16,
+    #[structopt(
+        short = "-V", long = "--verbose",
+        help = "Verbose log"
+    )]
+    verbose: bool,
 }

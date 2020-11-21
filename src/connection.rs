@@ -4,7 +4,7 @@ use bytes::{Buf, BytesMut};
 use std::io::{self, Cursor};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
-use chainpack::{RpcMessage, ChainPackWriter, Writer, CponWriter};
+use chainpack::{RpcMessage, ChainPackWriter, Writer, CponWriter, MetaMap};
 use tracing::{debug};
 
 /// Send and receive `Frame` values from a remote peer.
@@ -28,6 +28,7 @@ pub struct Connection {
 
     // The buffer for reading frames.
     buffer: BytesMut,
+    pub protocol: Option<Protocol>,
 }
 
 impl Connection {
@@ -41,6 +42,7 @@ impl Connection {
             // value to their specific use case. There is a high likelihood that
             // a larger read buffer will work better.
             buffer: BytesMut::with_capacity(4 * 1024),
+            protocol: None,
         }
     }
 
@@ -153,7 +155,7 @@ impl Connection {
     /// syscalls. However, it is fine to call these functions on a *buffered*
     /// write stream. The data will be written to the buffer. Once the buffer is
     /// full, it is flushed to the underlying socket.
-    pub async fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
+    pub async fn write_frame(&mut self, frame: &Frame) -> crate::Result<()> {
         // Arrays are encoded by encoding each entry. All other frame types are
         // considered literals. For now, mini-redis is not able to encode
         // recursive frame structures. See below for more details.
@@ -180,60 +182,12 @@ impl Connection {
         // Ensure the encoded frame is written to the socket. The calls above
         // are to the buffered stream and writes. Calling `flush` writes the
         // remaining contents of the buffer to the socket.
-        self.stream.flush().await
+        self.stream.flush().await?;
+        Ok(())
     }
 
-    // /// Write a frame literal to the stream
-    // async fn write_value(&mut self, frame: &RpcMessage) -> io::Result<()> {
-    //     match frame {
-    //         RpcMessage::Simple(val) => {
-    //             self.stream.write_u8(b'+').await?;
-    //             self.stream.write_all(val.as_bytes()).await?;
-    //             self.stream.write_all(b"\r\n").await?;
-    //         }
-    //         RpcMessage::Error(val) => {
-    //             self.stream.write_u8(b'-').await?;
-    //             self.stream.write_all(val.as_bytes()).await?;
-    //             self.stream.write_all(b"\r\n").await?;
-    //         }
-    //         RpcMessage::Integer(val) => {
-    //             self.stream.write_u8(b':').await?;
-    //             self.write_decimal(*val).await?;
-    //         }
-    //         RpcMessage::Null => {
-    //             self.stream.write_all(b"$-1\r\n").await?;
-    //         }
-    //         RpcMessage::Bulk(val) => {
-    //             let len = val.len();
-    //
-    //             self.stream.write_u8(b'$').await?;
-    //             self.write_decimal(len as u64).await?;
-    //             self.stream.write_all(val).await?;
-    //             self.stream.write_all(b"\r\n").await?;
-    //         }
-    //         // Encoding an `Array` from within a value cannot be done using a
-    //         // recursive strategy. In general, async fns do not support
-    //         // recursion. Mini-redis has not needed to encode nested arrays yet,
-    //         // so for now it is skipped.
-    //         RpcMessage::Array(_val) => unreachable!(),
-    //     }
-    //
-    //     Ok(())
-    // }
-    //
-    // /// Write a decimal frame to the stream
-    // async fn write_decimal(&mut self, val: u64) -> io::Result<()> {
-    //     use std::io::Write;
-    //
-    //     // Convert the value to a string
-    //     let mut buf = [0u8; 12];
-    //     let mut buf = Cursor::new(&mut buf[..]);
-    //     write!(&mut buf, "{}", val)?;
-    //
-    //     let pos = buf.position() as usize;
-    //     self.stream.write_all(&buf.get_ref()[..pos]).await?;
-    //     self.stream.write_all(b"\r\n").await?;
-    //
-    //     Ok(())
-    // }
+    pub async fn write_message(&mut self, message: &RpcMessage) -> crate::Result<()> {
+        let frame = Frame::from_rpcmessage(self.protocol.unwrap(), message);
+        self.write_frame(&frame).await
+    }
 }
