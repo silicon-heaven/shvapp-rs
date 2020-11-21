@@ -40,10 +40,10 @@ struct Shared {
     /// should be used.
     state: Mutex<State>,
 
-    /// Notifies the background task handling entry expiration. The background
-    /// task waits on this to be notified, then checks for expired values or the
-    /// shutdown signal.
-    background_task: Notify,
+    ///// Notifies the background task handling entry expiration. The background
+    ///// task waits on this to be notified, then checks for expired values or the
+    ///// shutdown signal.
+    //background_task: Notify,
 }
 
 #[derive(Debug)]
@@ -104,11 +104,11 @@ impl Db {
                 next_id: 0,
                 shutdown: false,
             }),
-            background_task: Notify::new(),
+            //background_task: Notify::new(),
         });
 
         // Start the background task.
-        tokio::spawn(purge_expired_tasks(shared.clone()));
+        //tokio::spawn(purge_expired_tasks(shared.clone()));
 
         Db { shared }
     }
@@ -264,7 +264,7 @@ impl Drop for Db {
             // reduce lock contention by ensuring the background task doesn't
             // wake up only to be unable to acquire the mutex.
             drop(state);
-            self.shared.background_task.notify_one();
+            //self.shared.background_task.notify_one();
         }
     }
 }
@@ -324,29 +324,29 @@ impl State {
     // }
 }
 
-/// Routine executed by the background task.
-///
-/// Wait to be notified. On notification, purge any expired keys from the shared
-/// state handle. If `shutdown` is set, terminate the task.
-async fn purge_expired_tasks(shared: Arc<Shared>) {
-    // If the shutdown flag is set, then the task should exit.
-    while !shared.is_shutdown() {
-        // Purge all keys that are expired. The function returns the instant at
-        // which the **next** key will expire. The worker should wait until the
-        // instant has passed then purge again.
-        if let Some(when) = shared.purge_expired_keys() {
-            // Wait until the next key expires **or** until the background task
-            // is notified. If the task is notified, then it must reload its
-            // state as new keys have been set to expire early. This is done by
-            // looping.
-            tokio::select! {
-                _ = time::sleep_until(when) => {}
-                _ = shared.background_task.notified() => {}
-            }
-        } else {
-            // There are no keys expiring in the future. Wait until the task is
-            // notified.
-            shared.background_task.notified().await;
-        }
-    }
-}
+///// Routine executed by the background task.
+/////
+///// Wait to be notified. On notification, purge any expired keys from the shared
+///// state handle. If `shutdown` is set, terminate the task.
+//async fn purge_expired_tasks(shared: Arc<Shared>) {
+//    // If the shutdown flag is set, then the task should exit.
+//    while !shared.is_shutdown() {
+//        // Purge all keys that are expired. The function returns the instant at
+//        // which the **next** key will expire. The worker should wait until the
+//        // instant has passed then purge again.
+//        if let Some(when) = shared.purge_expired_keys() {
+//            // Wait until the next key expires **or** until the background task
+//            // is notified. If the task is notified, then it must reload its
+//            // state as new keys have been set to expire early. This is done by
+//            // looping.
+//            tokio::select! {
+//                _ = time::sleep_until(when) => {}
+//                _ = shared.background_task.notified() => {}
+//            }
+//        } else {
+//            // There are no keys expiring in the future. Wait until the task is
+//            // notified.
+//            shared.background_task.notified().await;
+//        }
+//    }
+//}

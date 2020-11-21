@@ -56,20 +56,45 @@ async fn main() -> shvapp::Result<()> {
         match client_res {
             Ok(mut client) => {
                 info!("connected to: {}", addr);
-                match client.login(&LoginParams::new(&cli.user, &cli.password)).await {
+                let login_params = LoginParams::new(&cli.user, &cli.password);
+                match client.login(&login_params).await {
                     Ok(_) => {
                         loop {
-                            //let frame_res = client.read_frame_timeout(rpc_timeout).await;
-                            let frame_res = client.read_frame().await;
-                            debug!(?frame_res);
-                            match frame_res {
-                                Ok(frame) => {
-                                    todo!("impl");
+                            debug!("entering select");
+                            tokio::select! {
+                                maybe_msg = client.connection.read_message() => {
+                                    debug!(?maybe_msg);
+                                    match maybe_msg {
+                                        Ok(frame) => {
+                                            todo!("impl");
+                                        }
+                                        Err(e) => {
+                                            return Err(e.into())
+                                        }
+                                    }
                                 }
-                                Err(e) => {
-                                    return Err(e.into())
+                                maybe_signal = client.send_rpcmessage_rx.recv() => {
+                                    match maybe_signal {
+                                        Some(msg) => {
+                                            info!("send signal request: {}", msg);
+                                        }
+                                        None => {
+                                            warn!("send EMPTY signal request");
+                                        }
+                                    }
                                 }
                             }
+                            //let frame_res = client.read_frame_timeout(rpc_timeout).await;
+                            //let maybe_msg = client.connection.read_message().await;
+                            //debug!(?maybe_msg);
+                            //match maybe_msg {
+                            //    Ok(frame) => {
+                            //        todo!("impl");
+                            //    }
+                            //    Err(e) => {
+                            //        return Err(e.into())
+                            //    }
+                            //}
                         }
                     }
                     Err(e) => {

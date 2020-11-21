@@ -379,7 +379,7 @@ impl Handler {
                 self.connection.write_message(&resp).await?;
 
                 let login_rq = self.connection.read_frame().await?.to_rpcmesage()?;
-                debug!("login: {}", login_rq);
+                debug!("login request: {}", login_rq);
                 let login_error = loop {
                     if let Some(method) = login_rq.method() {
                         if method == "login" {
@@ -408,13 +408,17 @@ impl Handler {
                         let mut result = chainpack::rpcvalue::Map::new();
                         result.insert("clientId".into(), RpcValue::new(self.client_id));
                         resp.set_result(RpcValue::new(result));                // Write the response back to the client
+                        debug!("login response: {}", resp);
+                        self.connection.write_message(&resp).await?;
+                        return Ok(())
                     }
                     Some(err) => {
                         warn!("Client: {} login error {}", self.client_id, err);
                         resp.set_error(RpcError::new(RpcErrorCode::InvalidRequest, err));
+                        debug!("login response: {}", resp);
+                        self.connection.write_message(&resp).await?;
                     }
                 }
-                self.connection.write_message(&resp).await?;
             }
         }
         Err("Bad login sequence".into())

@@ -1,11 +1,12 @@
 use crate::frame::{self, Frame, Protocol};
-
 use bytes::{Buf, BytesMut};
 use std::io::{self, Cursor};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 use chainpack::{RpcMessage, ChainPackWriter, Writer, CponWriter, MetaMap};
 use tracing::{debug};
+use std::time::Duration;
+use tokio::stream::StreamExt;
 
 /// Send and receive `Frame` values from a remote peer.
 ///
@@ -62,6 +63,11 @@ impl Connection {
             // Attempt to parse a frame from the buffered data. If enough data
             // has been buffered, the frame is returned.
             if let Some(frame) = self.parse_frame()? {
+                if frame.data.len() < 1024 {
+                    debug!("===> {}", frame.to_rpcmesage().unwrap_or(RpcMessage::default()));
+                } else {
+                    debug!("===> {}", frame);
+                }
                 return Ok(frame);
             }
 
@@ -119,7 +125,6 @@ impl Connection {
                 let result = Frame::parse(&mut buff_cursor, frame_len);
                 match result {
                    Ok(frame) => {
-                       debug!("===>{}", frame);
                        let pos = buff_cursor.position() as usize;
                        self.buffer.advance(frame_len);
                        Ok(Some(frame))
@@ -159,7 +164,11 @@ impl Connection {
         // Arrays are encoded by encoding each entry. All other frame types are
         // considered literals. For now, mini-redis is not able to encode
         // recursive frame structures. See below for more details.
-        debug!("<=== {}", frame);
+        if frame.data.len() < 1024 {
+            debug!("<=== {}", frame.to_rpcmesage().unwrap_or(RpcMessage::default()));
+        } else {
+            debug!("<=== {}", frame);
+        }
         let mut meta_data = Vec::new();
         match &frame.protocol {
             Protocol::ChainPack => {
@@ -184,6 +193,21 @@ impl Connection {
         // remaining contents of the buffer to the socket.
         self.stream.flush().await?;
         Ok(())
+    }
+    pub async fn read_message(&mut self) -> crate::Result<RpcMessage> {
+        let frame = self.read_frame().await?;
+        let msg = frame.to_rpcmesage()?;
+        Ok(msg)
+    }
+    pub async fn read_message_timeout(&mut self, timeout: Duration) -> crate::Result<RpcMessage> {
+        match tokio::time::timeout(timeout, self.read_message()).await {
+            Ok(maybe_message) => {
+                maybe_message
+            }
+            Err(e) => {
+                Err(format!("Read message timeout after: {} sec - {}", timeout.as_secs(), e).into())
+            }
+        }
     }
 
     pub async fn write_message(&mut self, message: &RpcMessage) -> crate::Result<()> {
