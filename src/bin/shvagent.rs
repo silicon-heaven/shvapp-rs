@@ -2,11 +2,12 @@ use shvapp::{client, DEFAULT_PORT};
 
 use std::time::Duration;
 use structopt::StructOpt;
-use tracing::{warn, info};
+use tracing::{warn, info, debug};
 use std::env;
 use shvapp::client::{ConnectionParams, Client};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::util::SubscriberInitExt;
+use chainpack::RpcMessage;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "mini-redis-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "Issue Redis commands")]
@@ -61,14 +62,12 @@ async fn main() -> shvapp::Result<()> {
             Ok(mut client) => {
                 match client.login(&connection_params).await {
                     Ok(_) => {
-                        let rq_id = client.connection.send_request(".broker/app", "ping", None).await?;
-                        let rx = client.watch_rpcmessage_rx.clone();
+                        let fut = client.rpc_call_fut(RpcMessage::new_request(".broker/app", "ping", None)).await?;
                         tokio::spawn(async move {
-                            match Client::wait_for_response(rx, rq_id).await {
-                                Ok(resp) => info!("initial ping response: {}", resp),
-                                Err(e) => warn!("initial ping error: {}", e),
-                            }
+                           let resp = fut.await;
+                           info!("initial ping async response: {}", resp);
                         });
+
                         let mut rx = client.watch_rpcmessage_rx.clone();
                         loop {
                             info!("entering select");

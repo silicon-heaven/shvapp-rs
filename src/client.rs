@@ -3,7 +3,7 @@
 //! Provides an async connect and methods for issuing the supported commands.
 
 // use crate::cmd::{Get, Publish, Set, Subscribe, Unsubscribe};
-use crate::{Connection};
+use crate::{Connection, Error};
 
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tracing::{debug, info, warn, error};
@@ -13,7 +13,8 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use chainpack::rpcmessage::RqId;
 use tokio::sync::watch::Receiver;
-use sha1::{Sha1, Digest};
+// use sha1::{Sha1, Digest};
+use std::future::Future;
 
 const DEFAULT_RPC_CALL_TIMEOUT_MS: u64 = 5000;
 
@@ -114,18 +115,7 @@ impl Client {
         if login_params.password.len() != 40 {
             if let Some(result) = hello_resp.result() {
                 if let Some(nonce) = result.as_map().get("nonce") {
-                    let mut hasher = Sha1::new();
-                    hasher.update(login_params.password.as_bytes());
-                    let result = hasher.finalize();
-                    let hash = hex::encode(&result[..]);
-                    let hash = format!("{}{}", nonce.as_str(), hash);
-
-                    //debug!("login password hash1: {}", hash);
-                    let mut hasher = Sha1::new();
-                    hasher.update(hash.as_bytes());
-                    let result = hasher.finalize();
-                    let hash = hex::encode(&result[..]);
-                    //debug!("login password hash2: {}", hash);
+                    let hash = crate::utils::sha1_password_hash(&login_params.password, nonce.as_str());
                     login_params.password = hash;
                     login_params.password_type = PasswordType::SHA1;
                 } else {
@@ -235,6 +225,33 @@ impl Client {
                 Err(format!("Read message timeout after: {} sec - {}", timeout.as_secs(), e).into())
             }
         }
+    }
+
+    pub async fn rpc_call_fut(&mut self, request: RpcMessage) -> Result<impl Future<Output=RpcMessage>, &str> {
+        let rq_id = request.try_request_id()?;
+        debug!("sending RPC request id: {} .............. {}", rq_id, request);
+        let r = self.connection.send_message(&request).await;
+        let mut rx = self.watch_rpcmessage_rx.clone();
+        let fut = async move {
+            loop {
+                match rx.changed().await {
+                    Ok(_) => {
+                        let resp = rx.borrow();
+                        if let Some(id) = resp.request_id() {
+                            if id == rq_id {
+                                let resp = resp.clone();
+                                debug!("{} .............. got response: {}", rq_id, resp);
+                                return resp
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        panic!(format!("Read channel error {}", e))
+                    }
+                }
+            }
+        };
+        Ok(fut)
     }
 
     //pub async fn read_frame_timeout(&mut self, timeout: Duration) -> crate::Result<Frame> {

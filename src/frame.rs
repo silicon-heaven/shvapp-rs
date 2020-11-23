@@ -5,10 +5,10 @@ use std::fmt;
 use std::io::{Cursor, BufReader};
 use std::num::TryFromIntError;
 use std::string::FromUtf8Error;
-use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, RpcValue, MetaMap, ChainPackWriter, CponWriter, Writer};
+use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, RpcValue, MetaMap, ChainPackWriter, CponWriter, Writer, RpcMessageMetaTags};
 use crate::db::Db;
 use crate::Connection;
-use tracing::{instrument};
+use tracing::{instrument, warn};
 use bytes::Buf;
 
 /// A frame in the Redis protocol.
@@ -122,24 +122,31 @@ impl Frame {
     #[instrument(skip(self, db, dst))]
     pub(crate) async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
         // echo for now
-        match RpcMessage::create_response_meta(&self.meta) {
-            Ok(resp_meta) => {
-                /*
-                resp.set_result(RpcValue::new(&format!("Method '{}' called on shvPath: {}"
-                                                       , &self.message.method().unwrap_or("")
-                                                       , &self.message.shv_path().unwrap_or("")
-                )));
-                 */
-                let mut result = chainpack::rpcvalue::Map::new();
-                result.insert("nonce".into(), RpcValue::new("123456"));
-                let mut resp = RpcMessage::from_meta(resp_meta);
-                resp.set_result(RpcValue::new(result));                // Write the response back to the client
-                dst.send_frame(&Frame::from_rpcmessage(self.protocol, &resp)).await?;
-                Ok(())
+        if self.meta.is_request() {
+            let method = self.meta.method().ok_or("no method")?;
+            match RpcMessage::create_response_meta(&self.meta) {
+                Ok(resp_meta) => {
+                    let result;
+                    if method == "hello" {
+                        let mut map = chainpack::rpcvalue::Map::new();
+                        map.insert("nonce".into(), RpcValue::new("123456"));
+                        result = RpcValue::new(map);
+                    } else if method == "ping" {
+                        result = RpcValue::new(true);
+                    } else {
+                        result = RpcValue::new(format!("echo '{}'", method));
+                    }
+                    let mut resp = RpcMessage::from_meta(resp_meta);
+                    resp.set_result(result);                // Write the response back to the client
+                    dst.send_frame(&Frame::from_rpcmessage(self.protocol, &resp)).await?;
+                    Ok(())
+                }
+                Err(e) => {
+                    Err(e.into())
+                }
             }
-            Err(e) => {
-                Err(e.into())
-            }
+        } else {
+            Err(format!("apply frame not implemented: {}", self).into())
         }
     }
     // Converts the frame to an "unexpected frame" error

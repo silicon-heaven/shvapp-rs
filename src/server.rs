@@ -355,8 +355,7 @@ impl Handler {
                 }
             };
 
-            frame.apply(&self.db, &mut self.connection)
-                .await?;
+            frame.apply(&self.db, &mut self.connection).await?;
         }
 
         Ok(())
@@ -370,8 +369,9 @@ impl Handler {
         if let Some(method) = hello.method() {
             if method == "hello" {
                 let nonce: u32 = rand::thread_rng().gen();
+                let nonce = nonce.to_string();
                 let mut result = chainpack::rpcvalue::Map::new();
-                result.insert("nonce".into(), RpcValue::new(nonce.to_string()));
+                result.insert("nonce".into(), RpcValue::new(&nonce));
                 let mut resp = hello.create_response()?;
                 resp.set_result(RpcValue::new(result));                // Write the response back to the client
                 self.connection.send_message(&resp).await?;
@@ -385,13 +385,24 @@ impl Handler {
                                 if let Some(login_map) = params.as_map().get("login") {
                                     if let Some(user) = login_map.as_map().get("user") {
                                         let user = user.as_str();
-                                        if let Some(password) = login_map.as_map().get("password") {
-                                            let password = password.as_str();
-                                            if user == "iot" && password == "iotpwd" {
-                                                break None
-                                            } else {
-                                                break Some("Bad login user or password")
+                                        if user == "iot" {
+                                            if let Some(password) = login_map.as_map().get("password") {
+                                                let password = password.as_str();
+                                                let valid_password = "iotpwd";
+                                                if password.len() == 40 {
+                                                    let hash = crate::utils::sha1_password_hash(valid_password, &nonce);
+                                                    if password == hash {
+                                                        break None
+                                                    }
+                                                } else {
+                                                    if password == valid_password {
+                                                        break None
+                                                    }
+                                                }
+                                                break Some("Bad login password")
                                             }
+                                        } else {
+                                            break Some("Bad login user")
                                         }
                                     }
                                 }
