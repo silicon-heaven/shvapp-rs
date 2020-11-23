@@ -1,5 +1,4 @@
-use tokio::sync::{broadcast, Notify};
-use tokio::time::{self, Duration, Instant};
+use tokio::time::{Instant};
 
 use bytes::Bytes;
 use std::collections::{BTreeMap, HashMap};
@@ -52,9 +51,9 @@ struct State {
     /// `std::collections::HashMap` works fine.
     entries: HashMap<String, Entry>,
 
-    /// The pub/sub key-space. Redis uses a **separate** key space for key-value
-    /// and pub/sub. `mini-redis` handles this by using a separate `HashMap`.
-    pub_sub: HashMap<String, broadcast::Sender<Bytes>>,
+    // The pub/sub key-space. Redis uses a **separate** key space for key-value
+    // and pub/sub. `mini-redis` handles this by using a separate `HashMap`.
+    //pub_sub: HashMap<String, broadcast::Sender<Bytes>>,
 
     /// Tracks key TTLs.
     ///
@@ -99,7 +98,7 @@ impl Db {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 entries: HashMap::new(),
-                pub_sub: HashMap::new(),
+                //pub_sub: HashMap::new(),
                 expirations: BTreeMap::new(),
                 next_id: 0,
                 shutdown: false,
@@ -272,39 +271,39 @@ impl Drop for Db {
 impl Shared {
     /// Purge all expired keys and return the `Instant` at which the **next**
     /// key will expire. The background task will sleep until this instant.
-    fn purge_expired_keys(&self) -> Option<Instant> {
-        let mut state = self.state.lock().unwrap();
-
-        if state.shutdown {
-            // The database is shutting down. All handles to the shared state
-            // have dropped. The background task should exit.
-            return None;
-        }
-
-        // This is needed to make the borrow checker happy. In short, `lock()`
-        // returns a `MutexGuard` and not a `&mut State`. The borrow checker is
-        // not able to see "through" the mutex guard and determine that it is
-        // safe to access both `state.expirations` and `state.entries` mutably,
-        // so we get a "real" mutable reference to `State` outside of the loop.
-        let state = &mut *state;
-
-        // Find all keys scheduled to expire **before** now.
-        let now = Instant::now();
-
-        while let Some((&(when, id), key)) = state.expirations.iter().next() {
-            if when > now {
-                // Done purging, `when` is the instant at which the next key
-                // expires. The worker task will wait until this instant.
-                return Some(when);
-            }
-
-            // The key expired, remove it
-            state.entries.remove(key);
-            state.expirations.remove(&(when, id));
-        }
-
-        None
-    }
+    // fn purge_expired_keys(&self) -> Option<Instant> {
+    //     let mut state = self.state.lock().unwrap();
+    //
+    //     if state.shutdown {
+    //         // The database is shutting down. All handles to the shared state
+    //         // have dropped. The background task should exit.
+    //         return None;
+    //     }
+    //
+    //     // This is needed to make the borrow checker happy. In short, `lock()`
+    //     // returns a `MutexGuard` and not a `&mut State`. The borrow checker is
+    //     // not able to see "through" the mutex guard and determine that it is
+    //     // safe to access both `state.expirations` and `state.entries` mutably,
+    //     // so we get a "real" mutable reference to `State` outside of the loop.
+    //     let state = &mut *state;
+    //
+    //     // Find all keys scheduled to expire **before** now.
+    //     let now = Instant::now();
+    //
+    //     while let Some((&(when, id), key)) = state.expirations.iter().next() {
+    //         if when > now {
+    //             // Done purging, `when` is the instant at which the next key
+    //             // expires. The worker task will wait until this instant.
+    //             return Some(when);
+    //         }
+    //
+    //         // The key expired, remove it
+    //         state.entries.remove(key);
+    //         state.expirations.remove(&(when, id));
+    //     }
+    //
+    //     None
+    // }
 
     /// Returns `true` if the database is shutting down
     ///

@@ -3,18 +3,16 @@
 //! Provides an async `run` function that listens for inbound connections,
 //! spawning a task per connection.
 
-use crate::{Connection, Db, Shutdown, Frame};
+use crate::{Connection, Db, Shutdown};
 
 use std::future::Future;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time::{self, Duration};
-use tracing::{trace, debug, error, info, warn, instrument};
+use tracing::{debug, error, info, warn, instrument};
 use std::sync::atomic::{AtomicI64, Ordering};
-use chainpack::{RpcMessageMetaTags, RpcValue, RpcMessage};
-//use rand::Rng;
-use crate::frame::Protocol;
+use chainpack::{RpcMessageMetaTags, RpcValue};
 use rand::Rng;
 use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 
@@ -272,7 +270,7 @@ impl Listener {
             tokio::spawn(async move {
                 // Process the connection. If an error is encountered, log it.
                 match handler.run().await {
-                    Ok(r) => {
+                    Ok(_) => {
                         info!("Client id: {} disconnected", handler.client_id);
                     }
                     Err(err) => {
@@ -346,7 +344,7 @@ impl Handler {
             // While reading a request frame, also listen for the shutdown
             // signal.
             let frame = tokio::select! {
-                res = self.connection.read_frame() => {
+                res = self.connection.recv_frame() => {
                     let frame = res?;
                     frame
                 }
@@ -365,7 +363,7 @@ impl Handler {
     }
 
     async fn client_login(&mut self) -> crate::Result<()> {
-        let first_frame = self.connection.read_frame().await?;
+        let first_frame = self.connection.recv_frame().await?;
         self.connection.protocol = Some(first_frame.protocol);
         let hello = first_frame.to_rpcmesage()?;
         debug!("hello: {}", hello);
@@ -376,9 +374,9 @@ impl Handler {
                 result.insert("nonce".into(), RpcValue::new(nonce.to_string()));
                 let mut resp = hello.create_response()?;
                 resp.set_result(RpcValue::new(result));                // Write the response back to the client
-                self.connection.write_message(&resp).await?;
+                self.connection.send_message(&resp).await?;
 
-                let login_rq = self.connection.read_frame().await?.to_rpcmesage()?;
+                let login_rq = self.connection.recv_frame().await?.to_rpcmesage()?;
                 debug!("login request: {}", login_rq);
                 let login_error = loop {
                     if let Some(method) = login_rq.method() {
@@ -409,14 +407,14 @@ impl Handler {
                         result.insert("clientId".into(), RpcValue::new(self.client_id));
                         resp.set_result(RpcValue::new(result));                // Write the response back to the client
                         debug!("login response: {}", resp);
-                        self.connection.write_message(&resp).await?;
+                        self.connection.send_message(&resp).await?;
                         return Ok(())
                     }
                     Some(err) => {
                         warn!("Client: {} login error {}", self.client_id, err);
                         resp.set_error(RpcError::new(RpcErrorCode::InvalidRequest, err));
                         debug!("login response: {}", resp);
-                        self.connection.write_message(&resp).await?;
+                        self.connection.send_message(&resp).await?;
                     }
                 }
             }

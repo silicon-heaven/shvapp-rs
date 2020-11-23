@@ -1,11 +1,10 @@
 use structopt::StructOpt;
 use tokio::signal;
 use shvapp::{server, DEFAULT_PORT};
-use tracing::{info, Level};
+use tracing::{info};
 use std::env;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::fmt::SubscriberBuilder;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main]
 pub async fn main() -> shvapp::Result<()> {
@@ -15,15 +14,8 @@ pub async fn main() -> shvapp::Result<()> {
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info")
     }
-    //let format = tracing_subscriber::fmt::format().pretty();
-    //let ts = tracing_subscriber::fmt::try_init();
     let sb = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env());
-        // filter spans/events with level TRACE or higher.
-        //.with_max_level(Level::DEBUG);
-        //.pretty();
-        //.finish();
-    //let sb2;
     if cli.verbose == true {
         sb.pretty().finish().try_init()?;
     } else {

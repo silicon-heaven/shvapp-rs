@@ -6,10 +6,9 @@ use std::io::{Cursor, BufReader};
 use std::num::TryFromIntError;
 use std::string::FromUtf8Error;
 use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, RpcValue, MetaMap, ChainPackWriter, CponWriter, Writer};
-use chainpack::RpcMessageMetaTags;
 use crate::db::Db;
 use crate::Connection;
-use tracing::{debug, instrument};
+use tracing::{instrument};
 use bytes::Buf;
 
 /// A frame in the Redis protocol.
@@ -51,11 +50,11 @@ impl Frame {
         match &protocol {
             Protocol::ChainPack => {
                 let mut wr = ChainPackWriter::new(&mut data);
-                wr.write_value(&msg.as_rpcvalue().value());
+                wr.write_value(&msg.as_rpcvalue().value()).unwrap();
             }
             Protocol::Cpon => {
                 let mut wr = CponWriter::new(&mut data);
-                wr.write_value(&msg.as_rpcvalue().value());
+                wr.write_value(&msg.as_rpcvalue().value()).unwrap();
             }
         }
         let meta = msg.as_rpcvalue().meta().clone();
@@ -135,7 +134,7 @@ impl Frame {
                 result.insert("nonce".into(), RpcValue::new("123456"));
                 let mut resp = RpcMessage::from_meta(resp_meta);
                 resp.set_result(RpcValue::new(result));                // Write the response back to the client
-                dst.write_frame(&Frame::from_rpcmessage(self.protocol, &resp)).await?;
+                dst.send_frame(&Frame::from_rpcmessage(self.protocol, &resp)).await?;
                 Ok(())
             }
             Err(e) => {
@@ -143,10 +142,10 @@ impl Frame {
             }
         }
     }
-    /// Converts the frame to an "unexpected frame" error
-    pub(crate) fn to_error(&self) -> crate::Error {
-        format!("unexpected frame: {}", self).into()
-    }
+    // Converts the frame to an "unexpected frame" error
+    // pub(crate) fn to_error(&self) -> crate::Error {
+    //     format!("unexpected frame: {}", self).into()
+    // }
 }
 
 impl fmt::Display for Frame {

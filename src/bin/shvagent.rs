@@ -1,15 +1,12 @@
 use shvapp::{client, DEFAULT_PORT};
 
-use bytes::Bytes;
-use std::num::ParseIntError;
-use std::str;
 use std::time::Duration;
 use structopt::StructOpt;
-use tracing::field::debug;
-use std::io::{ErrorKind, Error};
-use tracing::{warn, info, debug};
+use tracing::{warn, info};
 use std::env;
-use shvapp::client::LoginParams;
+use shvapp::client::{ConnectionParams, Client};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "mini-redis-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "Issue Redis commands")]
@@ -22,9 +19,11 @@ struct Cli {
     password: String,
     #[structopt(name = "port", long = "--port", default_value = DEFAULT_PORT)]
     port: u16,
+    #[structopt(short = "-V", long = "--verbose", help = "Verbose log")]
+    verbose: bool,
 }
 
-const DEFAULT_RPC_TIMEOUT_MSEC: u64 = 5000;
+// const DEFAULT_RPC_TIMEOUT_MSEC: u64 = 5000;
 
 /// Entry point for CLI tool.
 ///
@@ -37,64 +36,54 @@ const DEFAULT_RPC_TIMEOUT_MSEC: u64 = 5000;
 /// multi-threaded.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> shvapp::Result<()> {
+    // Parse command line arguments
+    let cli = Cli::from_args();
+
     // Enable logging
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info")
     }
-    tracing_subscriber::fmt::try_init()?;
-
-    // Parse command line arguments
-    let cli = Cli::from_args();
+    let sb = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env());
+    if cli.verbose == true {
+        sb.pretty().finish().try_init()?;
+    } else {
+        sb.finish().try_init()?;
+    }
 
     // Get the remote address to connect to
-    let addr = format!("{}:{}", cli.host, cli.port);
-    let rpc_timeout = Duration::from_millis(DEFAULT_RPC_TIMEOUT_MSEC);
+    // let rpc_timeout = Duration::from_millis(DEFAULT_RPC_TIMEOUT_MSEC);
+    let connection_params = ConnectionParams::new(&cli.host, cli.port, &cli.user, &cli.password);
     loop {
-        info!("connecting to: {}", addr);
         // Establish a connection
-        let client_res = client::connect(&addr).await;
+        let client_res = client::connect(&connection_params).await;
         match client_res {
             Ok(mut client) => {
-                info!("connected to: {}", addr);
-                let login_params = LoginParams::new(&cli.user, &cli.password);
-                match client.login(&login_params).await {
+                match client.login(&connection_params).await {
                     Ok(_) => {
+                        let rq_id = client.connection.send_request(".broker/app", "ping", None).await?;
+                        let rx = client.watch_rpcmessage_rx.clone();
+                        tokio::spawn(async move {
+                            match Client::wait_for_response(rx, rq_id).await {
+                                Ok(resp) => info!("initial ping response: {}", resp),
+                                Err(e) => warn!("initial ping error: {}", e),
+                            }
+                        });
+                        let mut rx = client.watch_rpcmessage_rx.clone();
                         loop {
-                            debug!("entering select");
+                            info!("entering select");
                             tokio::select! {
-                                maybe_msg = client.connection.read_message() => {
-                                    debug!(?maybe_msg);
-                                    match maybe_msg {
-                                        Ok(frame) => {
-                                            todo!("impl");
-                                        }
-                                        Err(e) => {
-                                            return Err(e.into())
-                                        }
+                                maybe_msg = rx.changed() => {
+                                    if maybe_msg.is_ok() {
+                                        let message = &*rx.borrow();
+                                        info!("rpc message watched: {}", message);
                                     }
                                 }
-                                maybe_signal = client.send_rpcmessage_rx.recv() => {
-                                    match maybe_signal {
-                                        Some(msg) => {
-                                            info!("send signal request: {}", msg);
-                                        }
-                                        None => {
-                                            warn!("send EMPTY signal request");
-                                        }
-                                    }
+                                _ = client.message_loop() => {
+                                    info!("client message loop finished");
+                                    return Ok(())
                                 }
                             }
-                            //let frame_res = client.read_frame_timeout(rpc_timeout).await;
-                            //let maybe_msg = client.connection.read_message().await;
-                            //debug!(?maybe_msg);
-                            //match maybe_msg {
-                            //    Ok(frame) => {
-                            //        todo!("impl");
-                            //    }
-                            //    Err(e) => {
-                            //        return Err(e.into())
-                            //    }
-                            //}
                         }
                     }
                     Err(e) => {

@@ -1,5 +1,3 @@
-use tokio::signal;
-
 mod connection;
 pub use connection::Connection;
 
