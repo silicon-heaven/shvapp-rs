@@ -8,7 +8,7 @@ use std::string::FromUtf8Error;
 use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, RpcValue, MetaMap, ChainPackWriter, CponWriter, Writer, RpcMessageMetaTags};
 use crate::db::Db;
 use crate::Connection;
-use tracing::{instrument, warn};
+use tracing::{instrument};
 use bytes::Buf;
 
 /// A frame in the Redis protocol.

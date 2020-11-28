@@ -4,7 +4,7 @@ use std::time::Duration;
 use structopt::StructOpt;
 use tracing::{warn, info, debug};
 use std::env;
-use shvapp::client::{ConnectionParams, Client};
+use shvapp::client::{ConnectionParams};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::util::SubscriberInitExt;
 use chainpack::RpcMessage;
@@ -57,41 +57,52 @@ async fn main() -> shvapp::Result<()> {
     let connection_params = ConnectionParams::new(&cli.host, cli.port, &cli.user, &cli.password);
     loop {
         // Establish a connection
-        let client_res = client::connect(&connection_params).await;
-        match client_res {
-            Ok(mut client) => {
+        let connect_res = client::connect(&connection_params).await;
+        match connect_res {
+            Ok((mut client, mut connection)) => {
+                tokio::spawn(async move {
+                    info!("Spawning connection message loop");
+                    match connection.exec().await {
+                        Ok(_) => {
+                            info!("Connection message loop finished Ok");
+                        }
+                        Err(e) => {
+                            info!("Connection message loop finished with error: {}", e);
+                        }
+                    }
+                });
                 match client.login(&connection_params).await {
                     Ok(_) => {
-                        let fut = client.rpc_call_fut(RpcMessage::new_request(".broker/app", "ping", None)).await?;
-                        tokio::spawn(async move {
-                           let resp = fut.await;
-                           info!("initial ping async response: {}", resp);
-                        });
-
-                        let mut rx = client.watch_rpcmessage_rx.clone();
+                        let mut ping = client.create_request();
+                        let ping_fut = ping.exec(RpcMessage::new_request(".broker/app", "ping", None));
+                        match ping_fut.await {
+                            Ok(resp) => {
+                                info!("Ping response: {}", resp);
+                            }
+                            Err(e) => {
+                                info!("Ping error: {}", e);
+                            }
+                        }
+                        let mut ntf = client.create_message_notifier();
                         loop {
-                            info!("entering select");
-                            tokio::select! {
-                                maybe_msg = rx.changed() => {
-                                    if maybe_msg.is_ok() {
-                                        let message = &*rx.borrow();
-                                        info!("rpc message watched: {}", message);
-                                    }
+                            //tokio::time::sleep(Duration::from_secs(1)).await;
+                            match ntf.wait_for_message_timeout(Duration::from_secs(1)).await {
+                                Ok(msg) => {
+                                    debug!("Message arrived: {}", msg);
                                 }
-                                _ = client.message_loop() => {
-                                    info!("client message loop finished");
-                                    return Ok(())
+                                Err(e) => {
+                                    debug!("No message arrived within last second: {}.", e);
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        warn!("login error: {}", e);
+                        info!("Login error: {}", e);
                     }
-                }
+                };
             }
             Err(e) => {
-                warn!("conn error: {}", e);
+                warn!("connect to broker error: {}", e);
             }
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
