@@ -372,7 +372,7 @@ impl Handler {
                 let nonce = nonce.to_string();
                 let mut result = chainpack::rpcvalue::Map::new();
                 result.insert("nonce".into(), RpcValue::new(&nonce));
-                let mut resp = hello.create_response()?;
+                let mut resp = hello.prepare_response()?;
                 resp.set_result(RpcValue::new(result));                // Write the response back to the client
                 self.connection.send_message(&resp).await?;
 
@@ -411,7 +411,7 @@ impl Handler {
                     }
                     break Some("Bad login")
                 };
-                let mut resp = login_rq.create_response()?;
+                let mut resp = login_rq.prepare_response()?;
                 match login_error {
                     None => {
                         let mut result = chainpack::rpcvalue::Map::new();

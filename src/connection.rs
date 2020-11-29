@@ -213,7 +213,7 @@ impl Connection {
         self.send_frame(&frame).await
     }
     pub async fn send_request(&mut self, shvpath: &str, method: &str, params: Option<RpcValue>) -> crate::Result<RqId> {
-        let msg = RpcMessage::new_request(shvpath, method, params);
+        let msg = RpcMessage::create_request(shvpath, method, params);
         let rq_id = msg.request_id().unwrap();
         self.send_message(&msg).await?;
         Ok(rq_id)

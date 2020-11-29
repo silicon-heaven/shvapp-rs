@@ -124,7 +124,7 @@ impl Frame {
         // echo for now
         if self.meta.is_request() {
             let method = self.meta.method().ok_or("no method")?;
-            match RpcMessage::create_response_meta(&self.meta) {
+            match RpcMessage::prepare_response_meta(&self.meta) {
                 Ok(resp_meta) => {
                     let result;
                     if method == "hello" {
