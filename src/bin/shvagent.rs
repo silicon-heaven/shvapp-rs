@@ -94,8 +94,7 @@ async fn main() -> shvapp::Result<()> {
                 });
                 match client.login(&connection_params).await {
                     Ok(_) => {
-                        let mut ping = client.create_request();
-                        let ping_fut = ping.exec(RpcMessage::create_request(".broker/app", "ping", None));
+                        let ping_fut = client.call(RpcMessage::create_request(".broker/app", "ping", None));
                         match ping_fut.await {
                             Ok(resp) => {
                                 info!("Ping response: {}", resp);
@@ -104,16 +103,14 @@ async fn main() -> shvapp::Result<()> {
                                 info!("Ping error: {}", e);
                             }
                         }
-                        let mut ntf = client.create_message_notifier();
                         //let mut timeout_cnt = 0;
                         loop {
-                            match ntf.wait_for_message().await {
+                            match client.receive().await {
                                 Ok(msg) => {
                                     debug!("Message arrived: {}", msg);
                                     if msg.is_request() {
                                         match msg.prepare_response() {
                                             Ok(mut resp_msg) => {
-                                                let mut sender = client.create_response();
                                                 let ret_val = app_node.process_request(&msg).await;
                                                 match ret_val {
                                                     Ok(rv) => {
@@ -123,7 +120,7 @@ async fn main() -> shvapp::Result<()> {
                                                         resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
                                                     }
                                                 }
-                                                sender.send(resp_msg).await?;
+                                                client.send(resp_msg).await?;
                                             }
                                             Err(e) => {
                                                 warn!("Create response meta error: {}.", e);

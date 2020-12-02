@@ -10,7 +10,8 @@ use tracing::{debug, info, warn, error};
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue};
 use crate::frame::Protocol;
 use std::time::Duration;
-use tokio::sync::{mpsc, watch, broadcast};
+use tokio::sync::{mpsc, broadcast};
+use std::sync::Arc;
 
 const DEFAULT_RPC_CALL_TIMEOUT_MS: u64 = 5000;
 
@@ -78,34 +79,31 @@ impl ConnectionParams {
     }
 }
 
-pub struct ClientConnection {
-    connection: Connection,
-    send_request_rx: mpsc::Receiver<RpcMessage>,
-    recv_response_tx: watch::Sender<RpcMessage>,
-    finished_rx: broadcast::Receiver<()>,
-}
-
 pub struct Client {
-    pub send_message_tx: mpsc::Sender<RpcMessage>,
-    pub recv_message_rx: watch::Receiver<RpcMessage>,
+    //connection: Arc<ClientConnection>,
+    send_message_tx: mpsc::Sender<RpcMessage>,
+    recv_message_rx: broadcast::Receiver<RpcMessage>,
+    // recv_message_rx cannot be cloned, we have to keep TX end to make TX.subscribe() happen
+    // when cloning client
+    dummy_recv_response_tx: broadcast::Sender<RpcMessage>,
     // when broadcast sender is dropped, its receiver receives empty message
     // mpsc has not this function AFIK
     // broadcast channel is only one, I know, which will send something on TX end drop
     #[allow(dead_code)]
-    finished_tx: broadcast::Sender<()>,
+    client_dropped_tx: broadcast::Sender<()>,
 }
-
-pub struct RpcCall {
-    pub send_message_tx: mpsc::Sender<RpcMessage>,
-    pub recv_message_rx: watch::Receiver<RpcMessage>,
-}
-
-pub struct ResponseSender {
-    pub send_message_tx: mpsc::Sender<RpcMessage>,
-}
-
-pub struct MessageNotifier {
-    pub recv_message_rx: watch::Receiver<RpcMessage>,
+impl Clone for Client {
+    fn clone(&self) -> Self {
+        Client {
+            send_message_tx: self.send_message_tx.clone(),
+            recv_message_rx: self.dummy_recv_response_tx.subscribe(),
+            dummy_recv_response_tx: self.dummy_recv_response_tx.clone(),
+            client_dropped_tx: self.client_dropped_tx.clone(),
+        }
+    }
+    fn clone_from(&mut self, source: &Self) {
+        unimplemented!()
+    }
 }
 
 pub async fn connect(params: &ConnectionParams) -> crate::Result<(Client, ClientConnection)> {
@@ -125,23 +123,31 @@ pub async fn connect(params: &ConnectionParams) -> crate::Result<(Client, Client
 
     const BUFF_LEN: usize = 1024;
     let (send_message_tx, send_request_rx) = mpsc::channel(BUFF_LEN);
-    let (recv_response_tx, recv_message_rx) = watch::channel(RpcMessage::default());
-    let (finished_tx, finished_rx) = broadcast::channel(1);
+    let (recv_response_tx, recv_message_rx) = broadcast::channel(BUFF_LEN);
+    let (client_dropped_tx, client_dropped_rx) = broadcast::channel(1);
     Ok((
         Client {
             send_message_tx,
             recv_message_rx,
-            finished_tx,
+            dummy_recv_response_tx: recv_response_tx.clone(),
+            client_dropped_tx,
         },
         ClientConnection {
             connection,
             send_request_rx,
             recv_response_tx,
-            finished_rx,
+            client_dropped_rx,
         },
     ))
 }
 
+
+pub struct ClientConnection {
+    connection: Connection,
+    send_request_rx: mpsc::Receiver<RpcMessage>,
+    recv_response_tx: broadcast::Sender<RpcMessage>,
+    client_dropped_rx: broadcast::Receiver<()>,
+}
 impl ClientConnection {
     pub async fn exec(&mut self) -> crate::Result<()> {
         loop {
@@ -167,7 +173,8 @@ impl ClientConnection {
                         }
                     }
                 }
-                _  = self.finished_rx.recv() => {
+                _  = self.client_dropped_rx.recv() => {
+                    // all the client clones have dropped their client_dropped_tx end
                     info!("finished received");
                     return Ok(())
                 }
@@ -184,8 +191,7 @@ impl Drop for ClientConnection {
 impl Client {
 
     pub async fn login(&mut self, login_params: &ConnectionParams) -> crate::Result<()> {
-        let mut rq = self.create_request();
-        let hello_resp = rq.exec(RpcMessage::create_request("", "hello", None)).await?;
+        let hello_resp = self.call(RpcMessage::create_request("", "hello", None)).await?;
         debug!("hello resp {}", hello_resp);
         let mut login_params = login_params.clone();
         if login_params.password.len() != 40 {
@@ -201,20 +207,19 @@ impl Client {
                 warn!("hello response params missing!");
             }
         }
-        let mut rq = self.create_request();
-        let login_resp = rq.exec(RpcMessage::create_request("", "login", Some(login_params.to_rpcvalue()))).await?;
+        let login_resp = self.call(RpcMessage::create_request("", "login", Some(login_params.to_rpcvalue()))).await?;
         debug!("login result: {}", login_resp);
         match login_resp.result() {
             Some(_) => {
                 let heartbeat_interval = login_params.idle_watchdog_timeout as u64 / 3;
                 if heartbeat_interval >= 60 {
-                    let mut ping_rq = self.create_request();
+                    let mut client = self.clone();
                     tokio::spawn(async move {
                         info!("Starting heart-beat task with period: {}", heartbeat_interval);
                         loop {
                             tokio::time::sleep(Duration::from_secs(heartbeat_interval)).await;
                             debug!("Sending heart beat");
-                            let res = ping_rq.exec(RpcMessage::create_request(".broker/app", "ping", None)).await;
+                            let res = client.call(RpcMessage::create_request(".broker/app", "ping", None)).await;
                             match res {
                                 Ok(_) => {}
                                 Err(e) => error!("cannot send ping: {}", e),
@@ -228,32 +233,7 @@ impl Client {
         }
     }
 
-    pub fn create_request(&self) -> RpcCall {
-        RpcCall {
-            send_message_tx: self.send_message_tx.clone(),
-            recv_message_rx: self.recv_message_rx.clone(),
-        }
-    }
-    pub fn create_response(&self) -> ResponseSender {
-        ResponseSender {
-            send_message_tx: self.send_message_tx.clone(),
-        }
-    }
-    pub fn create_message_notifier(&self) -> MessageNotifier {
-        MessageNotifier {
-            recv_message_rx: self.recv_message_rx.clone(),
-        }
-    }
-}
-// impl Drop for Client {
-//     fn drop(&mut self) {
-//         debug!("Dropping client");
-//         self.finished_tx.send(());
-//     }
-// }
-
-impl RpcCall {
-    pub async fn exec(&mut self, request: RpcMessage) -> crate::Result<RpcMessage> {
+    pub async fn call(&mut self, request: RpcMessage) -> crate::Result<RpcMessage> {
         if !request.is_request() {
             return Err("Not request".into())
         }
@@ -262,8 +242,7 @@ impl RpcCall {
         self.send_message_tx.send(request).await?;
         match tokio::time::timeout(Duration::from_millis(DEFAULT_RPC_CALL_TIMEOUT_MS), async move {
             loop {
-                self.recv_message_rx.changed().await?;
-                let resp = self.recv_message_rx.borrow();
+                let resp = self.recv_message_rx.recv().await?;
                 if let Some(id) = resp.request_id() {
                     if id == rq_id {
                         let resp = resp.clone();
@@ -277,23 +256,16 @@ impl RpcCall {
             Err(_) => Err(format!("Response to request id: {} didn't arrive within {} msec.", rq_id, DEFAULT_RPC_CALL_TIMEOUT_MS).into()),
         }
     }
-}
-
-impl ResponseSender {
     pub async fn send(&mut self, msg: RpcMessage) -> crate::Result<()> {
         self.send_message_tx.send(msg).await?;
         Ok(())
     }
+    pub async fn receive(&mut self) -> crate::Result<RpcMessage> {
+        let msg = self.recv_message_rx.recv().await?;
+        return Ok(msg)
+    }
+    pub async fn receive_timeout(&mut self, timeout: Duration) -> crate::Result<RpcMessage> {
+        tokio::time::timeout(timeout, self.receive()).await?
+    }
 }
 
-impl MessageNotifier {
-    pub async fn wait_for_message(&mut self) -> crate::Result<RpcMessage> {
-        self.recv_message_rx.changed().await?;
-        let resp = self.recv_message_rx.borrow();
-        let resp = resp.clone();
-        return Ok(resp)
-    }
-    pub async fn wait_for_message_timeout(&mut self, timeout: Duration) -> crate::Result<RpcMessage> {
-        tokio::time::timeout(timeout, self.wait_for_message()).await?
-    }
-}
