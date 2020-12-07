@@ -1,7 +1,7 @@
-use chainpack::{RpcMessage, RpcValue, RpcMessageMetaTags};
+use chainpack::{RpcMessage, RpcValue, RpcMessageMetaTags, metamethod};
 use chainpack::rpcvalue::List;
 use tracing::debug;
-use chainpack::metamethod::MetaMethod;
+use chainpack::metamethod::{MetaMethod, Signature};
 
 pub struct AppNode {
     pub app_name: String,
@@ -11,6 +11,20 @@ pub struct AppNode {
 }
 
 impl AppNode {
+    pub fn new() -> Self {
+        Self {
+            app_name: "".into(),
+            device_id: "".into(),
+            device_type: "".into(),
+            methods: vec![
+                MetaMethod { name: "dir".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
+                MetaMethod { name: "ls".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
+                MetaMethod { name: "appName".into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("bws"), description: "".into() },
+                MetaMethod { name: "deviceId".into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("bws"), description: "".into() },
+                MetaMethod { name: "deviceType".into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("bws"), description: "".into() },
+            ]
+        }
+    }
     pub async fn process_request(&self, request: &RpcMessage) -> crate::Result<RpcValue> {
         if !request.is_request() {
             return Err("Not request".into());
@@ -66,7 +80,7 @@ impl AppNode {
         return Err(format!("Invalid path: '{}' call", shv_path).into())
     }
 
-    fn split_shv_path(path: &str) -> Vec<&str> {
+    pub fn split_shv_path(path: &str) -> Vec<&str> {
         let v = path.split('/')
             .filter(|s| !(*s).is_empty())
             .collect();

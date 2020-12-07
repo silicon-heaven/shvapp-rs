@@ -11,6 +11,8 @@ use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue, metamethod};
 use shvapp::appnode::{AppNode};
 use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::metamethod::{MetaMethod, Signature};
+use tokio::process::Command;
+use structopt::clap::App;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "mini-redis-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "Issue Redis commands")]
@@ -64,18 +66,8 @@ async fn main() -> shvapp::Result<()> {
     let mut connection_params = ConnectionParams::new(&cli.host, cli.port, &cli.user, &cli.password);
     connection_params.device_id = cli.device_id.unwrap_or("".to_string());
     connection_params.mount_point = cli.mount_point.unwrap_or("".to_string());
-    let app_node = AppNode {
-        app_name: "shvAgent".into(),
-        device_id: "test-id".into(),
-        device_type: "ShvAgentRs".into(),
-        methods: vec![
-            MetaMethod{ name: "dir".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
-            MetaMethod{ name: "ls".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
-            MetaMethod{ name: "appName".into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("bws"), description: "".into() },
-            MetaMethod{ name: "deviceId".into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("bws"), description: "".into() },
-            MetaMethod{ name: "deviceType".into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("bws"), description: "".into() },
-        ],
-    };
+
+    let app_node = ShvAgentAppNode::new();
     loop {
         // Establish a connection
         let connect_res = client::connect(&connection_params).await;
@@ -147,3 +139,45 @@ async fn main() -> shvapp::Result<()> {
     }
 }
 
+struct ShvAgentAppNode {
+    super_node: AppNode,
+}
+
+impl ShvAgentAppNode {
+    pub fn new() -> Self {
+        let mut ret = Self {
+            super_node: AppNode::new(),
+        };
+        ret.super_node.methods.push(MetaMethod { name: "runCmd".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("cmd"), description: "params: [\"command\", [param1, ...], {\"envkey1\": \"envval1\"}, 1, 2], only the command is mandatory".into() });
+        ret
+    }
+    pub async fn process_request(&self, request: &RpcMessage) -> shvapp::Result<RpcValue> {
+        if !request.is_request() {
+            return Err("Not request".into());
+        }
+        debug!("request: {}", request);
+        // let rq_id = request.request_id().unwrap();
+        let shv_path = request.shv_path().unwrap_or("");
+        let shv_path_list = AppNode::split_shv_path(shv_path);
+        if shv_path_list.is_empty() {
+            let method = request.method().unwrap();
+            debug!("method: {}", method);
+            if method == "runCmd" {
+                let params = request.params().ok_or("no params specified")?.as_list();
+                let cmd = params.get(0).ok_or("no command specified")?.as_str();
+                let mut child = Command::new(cmd);
+                if let Some(args) = params.get(1) {
+                    for arg in args.as_list() {
+                        child.arg(arg.as_str());
+                    }
+                }
+                let output = child.output();
+                // Await until the command completes
+                let output = output.await?;
+                let out: &[u8] = &output.stdout;
+                return Ok(RpcValue::new(out))
+            }
+        }
+        return self.super_node.process_request(request).await
+    }
+}
