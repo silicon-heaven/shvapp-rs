@@ -42,7 +42,7 @@ impl AppNode {
                 if let Some(params) = request.params() {
                     let params = params.as_list();
                     if params.len() >= 1 {
-                        method_pattern = params[0].as_str().to_string();
+                        method_pattern = params[0].as_str()?.to_string();
                     }
                     if params.len() >= 2 {
                         //debug!("param [1]: {}", params[1]);

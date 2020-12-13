@@ -164,11 +164,11 @@ impl ShvAgentAppNode {
             debug!("method: {}", method);
             if method == "runCmd" {
                 let params = request.params().ok_or("no params specified")?.as_list();
-                let cmd = params.get(0).ok_or("no command specified")?.as_str();
+                let cmd = params.get(0).ok_or("no command specified")?.as_str()?;
                 let mut child = Command::new(cmd);
                 if let Some(args) = params.get(1) {
                     for arg in args.as_list() {
-                        child.arg(arg.as_str());
+                        child.arg(arg.as_str()?);
                     }
                 }
                 let output = child.output();

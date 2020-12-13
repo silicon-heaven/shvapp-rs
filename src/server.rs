@@ -384,14 +384,14 @@ impl Handler {
                             if let Some(params) = login_rq.params() {
                                 if let Some(login_map) = params.as_map().get("login") {
                                     if let Some(user) = login_map.as_map().get("user") {
-                                        let user = user.as_str();
-                                        if user == "iot" {
+                                        let user = user.as_data();
+                                        if user == b"iot" {
                                             if let Some(password) = login_map.as_map().get("password") {
-                                                let password = password.as_str();
-                                                let valid_password = "iotpwd";
+                                                let password = password.as_data();
+                                                let valid_password = b"iotpwd";
                                                 if password.len() == 40 {
-                                                    let hash = crate::utils::sha1_password_hash(valid_password, &nonce);
-                                                    if password == hash {
+                                                    let hash = crate::utils::sha1_password_hash(valid_password, nonce.as_bytes());
+                                                    if password == hash.as_bytes() {
                                                         break None
                                                     }
                                                 } else {

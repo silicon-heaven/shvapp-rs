@@ -196,8 +196,8 @@ impl Client {
         let mut login_params = login_params.clone();
         if login_params.password.len() != 40 {
             if let Some(result) = hello_resp.result() {
-                if let Some(nonce) = result.as_map().get(&b"nonce"[..]) {
-                    let hash = crate::utils::sha1_password_hash(&login_params.password, nonce.as_str()?);
+                if let Some(nonce) = result.as_map().get("nonce") {
+                    let hash = crate::utils::sha1_password_hash(login_params.password.as_bytes(), nonce.as_data());
                     login_params.password = hash;
                     login_params.password_type = PasswordType::SHA1;
                 } else {
