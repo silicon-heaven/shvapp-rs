@@ -4,6 +4,7 @@ use std::time::Duration;
 use structopt::StructOpt;
 use tracing::{warn, info, debug};
 use std::env;
+use shvapp::utils;
 use shvapp::client::{ConnectionParams};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -15,7 +16,7 @@ use tokio::process::Command;
 use structopt::clap::App;
 
 #[derive(StructOpt, Debug)]
-#[structopt(name = "mini-redis-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "Issue Redis commands")]
+#[structopt(name = "shvagent-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
 struct Cli {
     #[structopt(name = "hostname", short = "-s", long = "--host", default_value = "127.0.0.1")]
     host: String,
@@ -158,7 +159,7 @@ impl ShvAgentAppNode {
         debug!("request: {}", request);
         // let rq_id = request.request_id().unwrap();
         let shv_path = request.shv_path().unwrap_or("");
-        let shv_path_list = AppNode::split_shv_path(shv_path);
+        let shv_path_list = utils::split_shv_path(shv_path);
         if shv_path_list.is_empty() {
             let method = request.method().unwrap();
             debug!("method: {}", method);

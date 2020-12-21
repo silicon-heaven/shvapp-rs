@@ -2,6 +2,8 @@ use chainpack::{RpcMessage, RpcValue, RpcMessageMetaTags, metamethod};
 use chainpack::rpcvalue::List;
 use tracing::debug;
 use chainpack::metamethod::{MetaMethod, Signature};
+use crate::utils;
+use crate::shvnode::ShvNode;
 
 pub struct AppNode {
     pub app_name: String,
@@ -32,7 +34,7 @@ impl AppNode {
         debug!("request: {}", request);
         // let rq_id = request.request_id().unwrap();
         let shv_path = request.shv_path().unwrap_or("");
-        let shv_path_list = Self::split_shv_path(shv_path);
+        let shv_path_list = utils::split_shv_path(shv_path);
         if shv_path_list.is_empty() {
             let method = request.method().unwrap();
             debug!("method: {}", method);
@@ -53,10 +55,10 @@ impl AppNode {
                 let mut lst = Vec::new();
                 for mm in &self.methods {
                     if method_pattern.is_empty() {
-                        lst.push(mm.list_attributes(attrs_pattern as u8));
+                        lst.push(mm.dir_attributes(attrs_pattern as u8));
                     }
                     else if method_pattern == mm.name {
-                        lst.push(mm.list_attributes(attrs_pattern as u8));
+                        lst.push(mm.dir_attributes(attrs_pattern as u8));
                         break;
                     }
                 }
@@ -79,11 +81,16 @@ impl AppNode {
         }
         return Err(format!("Invalid path: '{}' call", shv_path).into())
     }
+}
+impl<'a> ShvNode<'a> for AppNode {
+    type MethodIterator = std::slice::Iter<'a, MetaMethod>;
+    type ChildrenIterator = std::slice::Iter<'a, (&'a str, Option<bool>)>;
 
-    pub fn split_shv_path(path: &str) -> Vec<&str> {
-        let v = path.split('/')
-            .filter(|s| !(*s).is_empty())
-            .collect();
-        return v
+    fn methods(&'a self) -> Self::MethodIterator {
+        self.methods.iter()
+    }
+
+    fn children(&'a self) -> Self::ChildrenIterator {
+        unimplemented!()
     }
 }

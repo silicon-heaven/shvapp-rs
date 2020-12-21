@@ -17,7 +17,8 @@ pub mod server;
 // mod buffer;
 // pub use buffer::{buffer, Buffer};
 
-mod utils;
+pub mod utils;
+pub mod shvnode;
 pub mod appnode;
 
 mod shutdown;

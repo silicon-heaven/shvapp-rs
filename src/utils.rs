@@ -17,3 +17,10 @@ pub fn sha1_password_hash(password: &[u8], nonce: &[u8]) -> String {
     let hash = hex::encode(&result[..]);
     hash
 }
+
+pub fn split_shv_path(path: &str) -> Vec<&str> {
+    let v = path.split('/')
+        .filter(|s| !(*s).is_empty())
+        .collect();
+    return v
+}
