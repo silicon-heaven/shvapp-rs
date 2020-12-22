@@ -14,6 +14,8 @@ use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::metamethod::{MetaMethod, Signature};
 use tokio::process::Command;
 use structopt::clap::App;
+use async_trait::async_trait;
+use shvapp::shvnode::ShvNode;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
@@ -141,30 +143,70 @@ async fn main() -> shvapp::Result<()> {
 }
 
 struct ShvAgentAppNode {
+    methods: Vec<MetaMethod>,
     super_node: AppNode,
 }
 
 impl ShvAgentAppNode {
     pub fn new() -> Self {
-        let mut ret = Self {
+        Self {
+            methods: vec![
+                MetaMethod { name: "runCmd".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("cmd"), description: "params: [\"command\", [param1, ...], {\"envkey1\": \"envval1\"}, 1, 2], only the command is mandatory".into() }
+            ],
             super_node: AppNode::new(),
-        };
-        ret.super_node.methods.push(MetaMethod { name: "runCmd".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("cmd"), description: "params: [\"command\", [param1, ...], {\"envkey1\": \"envval1\"}, 1, 2], only the command is mandatory".into() });
-        ret
-    }
-    pub async fn process_request(&self, request: &RpcMessage) -> shvapp::Result<RpcValue> {
-        if !request.is_request() {
-            return Err("Not request".into());
         }
-        debug!("request: {}", request);
-        // let rq_id = request.request_id().unwrap();
-        let shv_path = request.shv_path().unwrap_or("");
-        let shv_path_list = utils::split_shv_path(shv_path);
-        if shv_path_list.is_empty() {
-            let method = request.method().unwrap();
-            debug!("method: {}", method);
+    }
+    // pub async fn process_request(&self, request: &RpcMessage) -> shvapp::Result<RpcValue> {
+    //     if !request.is_request() {
+    //         return Err("Not request".into());
+    //     }
+    //     debug!("request: {}", request);
+    //     // let rq_id = request.request_id().unwrap();
+    //     let shv_path = request.shv_path().unwrap_or("");
+    //     let shv_path_list = utils::split_shv_path(shv_path);
+    //     if shv_path_list.is_empty() {
+    //         let method = request.method().unwrap();
+    //         debug!("method: {}", method);
+    //         if method == "runCmd" {
+    //             let params = request.params().ok_or("no params specified")?.as_list();
+    //             let cmd = params.get(0).ok_or("no command specified")?.as_str()?;
+    //             let mut child = Command::new(cmd);
+    //             if let Some(args) = params.get(1) {
+    //                 for arg in args.as_list() {
+    //                     child.arg(arg.as_str()?);
+    //                 }
+    //             }
+    //             let output = child.output();
+    //             // Await until the command completes
+    //             let output = output.await?;
+    //             let out: &[u8] = &output.stdout;
+    //             return Ok(RpcValue::new(out))
+    //         }
+    //     }
+    //     return self.super_node.process_request(request).await
+    // }
+}
+
+#[async_trait]
+impl<'a> ShvNode<'a> for ShvAgentAppNode {
+    fn methods(&'a self, path: &[&str]) -> shvapp::Result<Vec<&'a MetaMethod>> {
+        if path.is_empty() {
+            let mut lst1 = self.super_node.methods(path)?;
+            let mut lst2 = self.methods.iter().map(|mm: &MetaMethod| { mm }).collect();
+            lst1.append(&mut lst2);
+            return Ok(lst1)
+        }
+        Err(format!("ShvAgentAppNode::methods() - Invalid path: {:?}", path).into())
+    }
+
+    fn children(&'a self, path: &[&str]) -> shvapp::Result<Vec<(&'a str, Option<bool>)>> {
+        Ok(Vec::new())
+    }
+
+    async fn call_method(&'a self, path: &[&str], method: &str, params: Option<&RpcValue>) -> shvapp::Result<RpcValue> {
+        if path.is_empty() {
             if method == "runCmd" {
-                let params = request.params().ok_or("no params specified")?.as_list();
+                let params = params.ok_or("no params specified")?.as_list();
                 let cmd = params.get(0).ok_or("no command specified")?.as_str()?;
                 let mut child = Command::new(cmd);
                 if let Some(args) = params.get(1) {
@@ -179,6 +221,6 @@ impl ShvAgentAppNode {
                 return Ok(RpcValue::new(out))
             }
         }
-        return self.super_node.process_request(request).await
+        self.super_node.call_method(path, method, params).await
     }
 }

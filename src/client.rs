@@ -101,9 +101,6 @@ impl Clone for Client {
             client_dropped_tx: self.client_dropped_tx.clone(),
         }
     }
-    fn clone_from(&mut self, source: &Self) {
-        unimplemented!()
-    }
 }
 
 pub async fn connect(params: &ConnectionParams) -> crate::Result<(Client, ClientConnection)> {
