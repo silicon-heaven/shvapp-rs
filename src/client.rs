@@ -11,7 +11,6 @@ use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue};
 use crate::frame::Protocol;
 use std::time::Duration;
 use tokio::sync::{mpsc, broadcast};
-use std::sync::Arc;
 
 const DEFAULT_RPC_CALL_TIMEOUT_MS: u64 = 5000;
 

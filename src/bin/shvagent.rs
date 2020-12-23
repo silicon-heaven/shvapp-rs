@@ -4,7 +4,6 @@ use std::time::Duration;
 use structopt::StructOpt;
 use tracing::{warn, info, debug};
 use std::env;
-use shvapp::utils;
 use shvapp::client::{ConnectionParams};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -13,7 +12,6 @@ use shvapp::appnode::{AppNode};
 use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::metamethod::{MetaMethod, Signature};
 use tokio::process::Command;
-use structopt::clap::App;
 use async_trait::async_trait;
 use shvapp::shvnode::ShvNode;
 
@@ -156,51 +154,21 @@ impl ShvAgentAppNode {
             super_node: AppNode::new(),
         }
     }
-    // pub async fn process_request(&self, request: &RpcMessage) -> shvapp::Result<RpcValue> {
-    //     if !request.is_request() {
-    //         return Err("Not request".into());
-    //     }
-    //     debug!("request: {}", request);
-    //     // let rq_id = request.request_id().unwrap();
-    //     let shv_path = request.shv_path().unwrap_or("");
-    //     let shv_path_list = utils::split_shv_path(shv_path);
-    //     if shv_path_list.is_empty() {
-    //         let method = request.method().unwrap();
-    //         debug!("method: {}", method);
-    //         if method == "runCmd" {
-    //             let params = request.params().ok_or("no params specified")?.as_list();
-    //             let cmd = params.get(0).ok_or("no command specified")?.as_str()?;
-    //             let mut child = Command::new(cmd);
-    //             if let Some(args) = params.get(1) {
-    //                 for arg in args.as_list() {
-    //                     child.arg(arg.as_str()?);
-    //                 }
-    //             }
-    //             let output = child.output();
-    //             // Await until the command completes
-    //             let output = output.await?;
-    //             let out: &[u8] = &output.stdout;
-    //             return Ok(RpcValue::new(out))
-    //         }
-    //     }
-    //     return self.super_node.process_request(request).await
-    // }
 }
 
 #[async_trait]
 impl<'a> ShvNode<'a> for ShvAgentAppNode {
-    fn methods(&'a self, path: &[&str]) -> shvapp::Result<Vec<&'a MetaMethod>> {
+    fn methods(&'a self, path: &[&str]) -> Vec<&'a MetaMethod> {
         if path.is_empty() {
-            let mut lst1 = self.super_node.methods(path)?;
-            let mut lst2 = self.methods.iter().map(|mm: &MetaMethod| { mm }).collect();
-            lst1.append(&mut lst2);
-            return Ok(lst1)
+            let mut lst = self.super_node.methods(path);
+            lst.extend(self.methods.iter().map(|mm: &MetaMethod| { mm }));
+            return lst;
         }
-        Err(format!("ShvAgentAppNode::methods() - Invalid path: {:?}", path).into())
+        return Vec::new()
     }
 
-    fn children(&'a self, path: &[&str]) -> shvapp::Result<Vec<(&'a str, Option<bool>)>> {
-        Ok(Vec::new())
+    fn children(&'a self, _path: &[&str]) -> Vec<(&'a str, Option<bool>)> {
+        return Vec::new()
     }
 
     async fn call_method(&'a self, path: &[&str], method: &str, params: Option<&RpcValue>) -> shvapp::Result<RpcValue> {

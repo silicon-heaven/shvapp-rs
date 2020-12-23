@@ -1,4 +1,4 @@
-use chainpack::{RpcMessage, RpcValue, RpcMessageMetaTags, metamethod};
+use chainpack::{RpcValue, metamethod};
 use tracing::debug;
 use chainpack::metamethod::{MetaMethod, Signature};
 use crate::shvnode::ShvNode;
@@ -19,17 +19,17 @@ impl BasicNode {
 }
 #[async_trait]
 impl<'a> ShvNode<'a> for BasicNode {
-    fn methods(&'a self, path: &[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
+    fn methods(&'a self, path: &[&str]) -> Vec<&'a MetaMethod> {
         if path.is_empty() {
-            return Ok(self.methods.iter().map(|mm: &MetaMethod| {mm}).collect())
+            return self.methods.iter().map(|mm: &MetaMethod| {mm}).collect()
         }
-        Err(format!("BasicNode::methods() - Invalid path: {:?}", path).into())
+        return Vec::new()
     }
-    fn children(&'a self, path: &[&str]) -> crate::Result<Vec<(&'a str, Option<bool>)>> {
+    fn children(&'a self, path: &[&str]) -> Vec<(&'a str, Option<bool>)> {
         if path.is_empty() {
-            return Ok(Vec::new())
+            return Vec::new()
         }
-        Err(format!("BasicNode::children() - Invalid path: {:?}", path).into())
+        return Vec::new()
     }
     async fn call_method(&'a self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
         if path.is_empty() {
@@ -51,11 +51,11 @@ impl<'a> ShvNode<'a> for BasicNode {
                     }
                 }
                 debug!("method pattern: {}, attrs pattern: {}", method_pattern, attrs_pattern);
-                return self.dir(path, &method_pattern, attrs_pattern);
+                return Ok(self.dir(path, &method_pattern, attrs_pattern));
             }
             if method == "ls" {
                 let mut name_pattern = "".to_string();
-                let mut with_children_info = false;
+                let mut ls_attrs = 0;
                 if let Some(params) = params {
                     if params.is_list() {
                         let params = params.as_list();
@@ -64,14 +64,14 @@ impl<'a> ShvNode<'a> for BasicNode {
                         }
                         if params.len() >= 2 {
                             //debug!("param [1]: {}", params[1]);
-                            with_children_info = (params[1].as_u32() != 0);
+                            ls_attrs = params[1].as_u32();
                         }
                     } else {
                         name_pattern = params.to_string();
                     }
                 }
-                debug!("name pattern: {}, with_children_info: {}", name_pattern, with_children_info);
-                return self.ls(path, &name_pattern, with_children_info);
+                debug!("name pattern: {}, with_children_info: {}", name_pattern, ls_attrs);
+                return Ok(self.ls(path, &name_pattern, ls_attrs));
             }
         }
         Err(format!("Invalid method: '{}' on path: '{:?}' called", method, path).into())
@@ -105,18 +105,17 @@ impl AppNode {
 }
 #[async_trait]
 impl<'a> ShvNode<'a> for AppNode {
-    fn methods(&'a self, path: &[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
+    fn methods(&'a self, path: &[&str]) -> Vec<&'a MetaMethod> {
         if path.is_empty() {
-            let mut lst1 = self.super_node.methods(path)?;
-            let mut lst2 = self.methods.iter().map(|mm: &MetaMethod| { mm }).collect();
-            lst1.append(&mut lst2);
-            return Ok(lst1)
+            let mut lst = self.super_node.methods(path);
+            lst.extend(self.methods.iter().map(|mm: &MetaMethod| { mm }));
+            return lst;
         }
-        Err(format!("AppNode::methods() - Invalid path: {:?}", path).into())
+        return Vec::new();
     }
 
-    fn children(&'a self, path: &[&str]) -> crate::Result<Vec<(&'a str, Option<bool>)>> {
-        Ok(Vec::new())
+    fn children(&'a self, _path: &[&str]) -> Vec<(&'a str, Option<bool>)> {
+        Vec::new()
     }
 
     async fn call_method(&'a self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
