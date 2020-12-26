@@ -18,20 +18,20 @@ impl BasicNode {
     }
 }
 #[async_trait]
-impl<'a> ShvNode<'a> for BasicNode {
-    fn methods(&'a self, path: &[&str]) -> Vec<&'a MetaMethod> {
+impl ShvNode for BasicNode {
+    fn methods(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
         if path.is_empty() {
             return self.methods.iter().map(|mm: &MetaMethod| {mm}).collect()
         }
         return Vec::new()
     }
-    fn children(&'a self, path: &[&str]) -> Vec<(&'a str, Option<bool>)> {
+    fn children(& self, path: &[&str]) -> Vec<(&'_ str, Option<bool>)> {
         if path.is_empty() {
             return Vec::new()
         }
         return Vec::new()
     }
-    async fn call_method(&'a self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
+    async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
         if path.is_empty() {
             if method == "dir" {
                 let mut method_pattern = "".to_string();
@@ -50,7 +50,7 @@ impl<'a> ShvNode<'a> for BasicNode {
                         method_pattern = params.to_string();
                     }
                 }
-                debug!("method pattern: {}, attrs pattern: {}", method_pattern, attrs_pattern);
+                debug!("dir - method pattern: {}, attrs pattern: {}", method_pattern, attrs_pattern);
                 return Ok(self.dir(path, &method_pattern, attrs_pattern));
             }
             if method == "ls" {
@@ -104,8 +104,8 @@ impl AppNode {
     }
 }
 #[async_trait]
-impl<'a> ShvNode<'a> for AppNode {
-    fn methods(&'a self, path: &[&str]) -> Vec<&'a MetaMethod> {
+impl ShvNode for AppNode {
+    fn methods(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
         if path.is_empty() {
             let mut lst = self.super_node.methods(path);
             lst.extend(self.methods.iter().map(|mm: &MetaMethod| { mm }));
@@ -114,11 +114,11 @@ impl<'a> ShvNode<'a> for AppNode {
         return Vec::new();
     }
 
-    fn children(&'a self, _path: &[&str]) -> Vec<(&'a str, Option<bool>)> {
+    fn children(& self, _path: &[&str]) -> Vec<(&'_ str, Option<bool>)> {
         Vec::new()
     }
 
-    async fn call_method(&'a self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
+    async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
         if path.is_empty() {
             if method == "appName" {
                 return Ok(RpcValue::new(&self.app_name))

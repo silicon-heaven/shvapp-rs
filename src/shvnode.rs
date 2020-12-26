@@ -29,11 +29,11 @@ use crate::utils;
 // }
 
 #[async_trait]
-pub trait ShvNode<'a> {
-    fn methods(&'a self, path: &[&str]) -> Vec<&'a MetaMethod>;
-    fn children(&'a self, path: &[&str]) -> Vec<(&'a str, Option<bool>)>;
+pub trait ShvNode: Send + Sync {
+    fn methods(&self, path: &[&str]) -> Vec<&'_ MetaMethod>;
+    fn children(&self, path: &[&str]) -> Vec<(&'_ str, Option<bool>)>;
 
-    async fn process_request(&'a self, request: &RpcMessage) -> crate::Result<RpcValue> {
+    async fn process_request(&mut self, request: &RpcMessage) -> crate::Result<RpcValue>  {
         if !request.is_request() {
             return Err("Not request".into());
         }
@@ -46,9 +46,9 @@ pub trait ShvNode<'a> {
         let params = request.params();
         self.call_method(&path, method, params).await
     }
-    async fn call_method(&'a self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue>;
+    async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue>;
 
-    fn dir(&'a self, path: &[&str], method_pattern: &str, attrs_pattern: u32) -> RpcValue {
+    fn dir(& self, path: &[&str], method_pattern: &str, attrs_pattern: u32) -> RpcValue {
         debug!("dir method pattern: {}, attrs pattern: {}", method_pattern, attrs_pattern);
         let mut lst: List = Vec::new();
         for mm in self.methods(path) {
@@ -63,7 +63,7 @@ pub trait ShvNode<'a> {
         debug!("dir: {:?}", lst);
         return RpcValue::new(lst);
     }
-    fn ls(&'a self, path: &[&str], name_pattern: &str, ls_attrs_pattern: u32) -> RpcValue {
+    fn ls(& self, path: &[&str], name_pattern: &str, ls_attrs_pattern: u32) -> RpcValue {
         let with_children_info = (ls_attrs_pattern & (LsAttribute::HasChildren as u32)) != 0;
         debug!("ls name_pattern: {}, with_children_info: {}", name_pattern, with_children_info);
         let filter = |it: &'_ &(&str, Option<bool>)| {

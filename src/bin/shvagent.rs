@@ -68,7 +68,8 @@ async fn main() -> shvapp::Result<()> {
     connection_params.device_id = cli.device_id.unwrap_or("".to_string());
     connection_params.mount_point = cli.mount_point.unwrap_or("".to_string());
 
-    let app_node = ShvAgentAppNode::new();
+    let mut app_node = ShvAgentAppNode::new();
+    //let dyn_app_node = (&mut app_node) as &dyn ShvNode;
     loop {
         // Establish a connection
         let connect_res = client::connect(&connection_params).await;
@@ -157,8 +158,8 @@ impl ShvAgentAppNode {
 }
 
 #[async_trait]
-impl<'a> ShvNode<'a> for ShvAgentAppNode {
-    fn methods(&'a self, path: &[&str]) -> Vec<&'a MetaMethod> {
+impl ShvNode for ShvAgentAppNode {
+    fn methods(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
         if path.is_empty() {
             let mut lst = self.super_node.methods(path);
             lst.extend(self.methods.iter().map(|mm: &MetaMethod| { mm }));
@@ -167,11 +168,11 @@ impl<'a> ShvNode<'a> for ShvAgentAppNode {
         return Vec::new()
     }
 
-    fn children(&'a self, _path: &[&str]) -> Vec<(&'a str, Option<bool>)> {
+    fn children(& self, _path: &[&str]) -> Vec<(&'_ str, Option<bool>)> {
         return Vec::new()
     }
 
-    async fn call_method(&'a self, path: &[&str], method: &str, params: Option<&RpcValue>) -> shvapp::Result<RpcValue> {
+    async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> shvapp::Result<RpcValue> {
         if path.is_empty() {
             if method == "runCmd" {
                 let params = params.ok_or("no params specified")?.as_list();
