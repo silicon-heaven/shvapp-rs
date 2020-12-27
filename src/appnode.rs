@@ -1,7 +1,7 @@
 use chainpack::{RpcValue, metamethod};
 use tracing::debug;
 use chainpack::metamethod::{MetaMethod, Signature};
-use crate::shvnode::ShvNode;
+use crate::shvnode::{RpcProcessor};
 use async_trait::async_trait;
 
 pub struct BasicNode {
@@ -17,20 +17,29 @@ impl BasicNode {
         }
     }
 }
+
 #[async_trait]
-impl ShvNode for BasicNode {
+impl RpcProcessor for BasicNode {
     fn methods(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
         if path.is_empty() {
             return self.methods.iter().map(|mm: &MetaMethod| {mm}).collect()
         }
         return Vec::new()
     }
-    fn children(& self, path: &[&str]) -> Vec<(&'_ str, Option<bool>)> {
-        if path.is_empty() {
-            return Vec::new()
-        }
+    fn children(&self, path: &[&str]) -> Vec<(String, Option<bool>)> {
         return Vec::new()
     }
+
+    async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
+        unimplemented!()
+    }
+    // fn children(& self, path: &[&str]) -> Vec<(&'_ str, Option<bool>)> {
+    //     if path.is_empty() {
+    //         return Vec::new()
+    //     }
+    //     return Vec::new()
+    // }
+    /*
     async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
         if path.is_empty() {
             if method == "dir" {
@@ -77,21 +86,21 @@ impl ShvNode for BasicNode {
         Err(format!("Invalid method: '{}' on path: '{:?}' called", method, path).into())
         //Err(format!("BasicNode::call_method() - Invalid path: {:?}", path).into())
     }
+     */
 }
 pub struct AppNode {
     pub app_name: String,
     pub device_id: String,
     pub device_type: String,
-    pub methods: Vec<MetaMethod>,
-    super_node: BasicNode,
+    methods: Vec<MetaMethod>,
 }
 
 impl AppNode {
-    pub fn new() -> Self {
+    pub fn new(app_name: &str, device_type: &str, device_id: &str) -> Self {
         Self {
-            app_name: "".into(),
-            device_id: "".into(),
-            device_type: "".into(),
+            app_name: app_name.to_string(),
+            device_type: device_type.to_string(),
+            device_id: device_id.to_string(),
             methods: vec![
                 // MetaMethod { name: "dir".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
                 // MetaMethod { name: "ls".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
@@ -99,23 +108,19 @@ impl AppNode {
                 MetaMethod { name: "deviceId".into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("bws"), description: "".into() },
                 MetaMethod { name: "deviceType".into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("bws"), description: "".into() },
             ],
-            super_node: BasicNode::new(),
         }
     }
 }
 #[async_trait]
-impl ShvNode for AppNode {
+impl RpcProcessor for AppNode {
     fn methods(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
         if path.is_empty() {
-            let mut lst = self.super_node.methods(path);
-            lst.extend(self.methods.iter().map(|mm: &MetaMethod| { mm }));
-            return lst;
+            return self.methods.iter().map(|mm: &MetaMethod| {mm}).collect()
         }
-        return Vec::new();
+        return Vec::new()
     }
-
-    fn children(& self, _path: &[&str]) -> Vec<(&'_ str, Option<bool>)> {
-        Vec::new()
+    fn children(&self, path: &[&str]) -> Vec<(String, Option<bool>)> {
+        return Vec::new()
     }
 
     async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
@@ -130,6 +135,6 @@ impl ShvNode for AppNode {
                 return Ok(RpcValue::new(&self.device_type))
             }
         }
-        self.super_node.call_method(path, method, params).await
+        Err(format!("Unknown method: {} on path: {:?}", method, path).into())
     }
 }

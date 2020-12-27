@@ -8,12 +8,12 @@ use shvapp::client::{ConnectionParams};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::util::SubscriberInitExt;
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue, metamethod};
-use shvapp::appnode::{AppNode};
+use shvapp::appnode::{AppNode, BasicNode};
 use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::metamethod::{MetaMethod, Signature};
 use tokio::process::Command;
 use async_trait::async_trait;
-use shvapp::shvnode::ShvNode;
+use shvapp::shvnode::{ShvNode, RpcProcessor};
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
@@ -62,13 +62,23 @@ async fn main() -> shvapp::Result<()> {
         sb.finish().try_init()?;
     }
 
+    let device_id = cli.device_id.unwrap_or("".into());
     // Get the remote address to connect to
     // let rpc_timeout = Duration::from_millis(DEFAULT_RPC_TIMEOUT_MSEC);
     let mut connection_params = ConnectionParams::new(&cli.host, cli.port, &cli.user, &cli.password);
-    connection_params.device_id = cli.device_id.unwrap_or("".to_string());
+    connection_params.device_id = device_id.to_string();
     connection_params.mount_point = cli.mount_point.unwrap_or("".to_string());
 
-    let mut app_node = ShvAgentAppNode::new();
+    let mut shv_node = ShvNode {
+        name: String::new(),
+        processors: vec![
+            Box::new(BasicNode::new()),
+            Box::new(AppNode::new("ShvAgent", "ShvAgent", &device_id)),
+            Box::new(ShvAgentNode::new()),
+        ],
+        child_nodes: vec![],
+    };
+    //let mut app_node = ShvAgentAppNode::new();
     //let dyn_app_node = (&mut app_node) as &dyn ShvNode;
     loop {
         // Establish a connection
@@ -105,7 +115,7 @@ async fn main() -> shvapp::Result<()> {
                                     if msg.is_request() {
                                         match msg.prepare_response() {
                                             Ok(mut resp_msg) => {
-                                                let ret_val = app_node.process_request(&msg).await;
+                                                let ret_val = shv_node.process_request(&msg).await;
                                                 match ret_val {
                                                     Ok(rv) => {
                                                         resp_msg.set_result(rv);
@@ -141,34 +151,29 @@ async fn main() -> shvapp::Result<()> {
     }
 }
 
-struct ShvAgentAppNode {
+struct ShvAgentNode {
     methods: Vec<MetaMethod>,
-    super_node: AppNode,
 }
 
-impl ShvAgentAppNode {
+impl ShvAgentNode {
     pub fn new() -> Self {
         Self {
             methods: vec![
                 MetaMethod { name: "runCmd".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("cmd"), description: "params: [\"command\", [param1, ...], {\"envkey1\": \"envval1\"}, 1, 2], only the command is mandatory".into() }
             ],
-            super_node: AppNode::new(),
         }
     }
 }
 
 #[async_trait]
-impl ShvNode for ShvAgentAppNode {
+impl RpcProcessor for ShvAgentNode {
     fn methods(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
         if path.is_empty() {
-            let mut lst = self.super_node.methods(path);
-            lst.extend(self.methods.iter().map(|mm: &MetaMethod| { mm }));
-            return lst;
+            return self.methods.iter().map(|mm: &MetaMethod| {mm}).collect()
         }
         return Vec::new()
     }
-
-    fn children(& self, _path: &[&str]) -> Vec<(&'_ str, Option<bool>)> {
+    fn children(&self, path: &[&str]) -> Vec<(String, Option<bool>)> {
         return Vec::new()
     }
 
@@ -190,6 +195,6 @@ impl ShvNode for ShvAgentAppNode {
                 return Ok(RpcValue::new(out))
             }
         }
-        self.super_node.call_method(path, method, params).await
+        Err(format!("Unknown method: {} on path: {:?}", method, path).into())
     }
 }
