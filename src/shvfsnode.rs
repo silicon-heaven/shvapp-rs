@@ -4,6 +4,7 @@ use chainpack::{RpcValue, metamethod};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::{io, fs};
+use tracing::{warn, info, debug};
 
 pub struct FileSystemDirNode {
     root: String,
@@ -14,10 +15,18 @@ impl FileSystemDirNode {
         Self {
             root: root.into(),
             methods: vec![
-                // MetaMethod { name: "dir".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
+                MetaMethod { name: "read".into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("rd"), description: "Read file content".into() },
                 // MetaMethod { name: "ls".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
             ]
         }
+    }
+    fn make_absolute_path(&self, path: &[&str]) -> PathBuf {
+        let mut pb = PathBuf::new();
+        pb.push(&self.root);
+        for p in path {
+            pb.push(p);
+        }
+        pb
     }
     fn is_dir_empty(&self, path: &Path) -> bool {
         match path.read_dir() {
@@ -26,18 +35,16 @@ impl FileSystemDirNode {
         }
     }
     fn children2(&self, path: &[&str]) -> io::Result<Vec<(String, Option<bool>)>> {
-        let mut pb = PathBuf::new();
-        pb.push(&self.root);
-        for p in path {
-            pb.push(p);
-        }
+        let mut pb = self.make_absolute_path(path);
         if pb.is_dir() {
             let mut ret = Vec::new();
             for entry in pb.read_dir()? {
                 if let Ok(entry) = entry {
                     pb.push(entry.file_name());
                     let fname = entry.file_name().into_string().unwrap_or_default();
-                    let e = (fname, Some(self.is_dir_empty(&pb)));
+                    let is_dir = self.is_dir_empty(&pb);
+                    debug!("------------------------------------------- {} is dir: {}", fname, is_dir);
+                    let e = (fname, Some(is_dir));
                     pb.pop();
                     ret.push(e);
                 }
@@ -51,7 +58,7 @@ impl FileSystemDirNode {
 #[async_trait]
 impl RpcProcessor for FileSystemDirNode {
     fn methods(&self, path: &[&str]) -> Vec<&'_ MetaMethod> {
-        if path.is_empty() {
+        if !self.make_absolute_path(path).is_dir() {
             return self.methods.iter().map(|mm: &MetaMethod| { mm }).collect()
         }
         return Vec::new()
@@ -64,6 +71,10 @@ impl RpcProcessor for FileSystemDirNode {
     }
 
     async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
-        unimplemented!()
+        if method == "read" {
+            let data = fs::read(self.make_absolute_path(path))?;
+            return Ok(RpcValue::new(data))
+        }
+        Err(format!("Unknown method {}", method).into())
     }
 }

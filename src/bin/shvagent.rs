@@ -14,6 +14,7 @@ use chainpack::metamethod::{MetaMethod, Signature};
 use tokio::process::Command;
 use async_trait::async_trait;
 use shvapp::shvnode::{ShvNode, RpcProcessor};
+use shvapp::shvfsnode::FileSystemDirNode;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
@@ -76,7 +77,14 @@ async fn main() -> shvapp::Result<()> {
             Box::new(AppNode::new("ShvAgent", "ShvAgent", &device_id)),
             Box::new(ShvAgentNode::new()),
         ],
-        child_nodes: vec![],
+        child_nodes: vec![Box::new(ShvNode {
+            name: "fs".to_string(),
+            processors: vec![
+                Box::new(BasicNode::new()),
+                Box::new(FileSystemDirNode::new("/tmp")),
+            ],
+            child_nodes: vec![]
+        })],
     };
     //let mut app_node = ShvAgentAppNode::new();
     //let dyn_app_node = (&mut app_node) as &dyn ShvNode;

@@ -24,3 +24,14 @@ pub fn split_shv_path(path: &str) -> Vec<&str> {
         .collect();
     return v
 }
+
+pub fn join_shv_path(path: &[&str]) -> String {
+    let mut s = String::new();
+    for p in path {
+        if !s.is_empty() {
+            s.push('/');
+        }
+        s.push_str(*p);
+    }
+    s
+}
