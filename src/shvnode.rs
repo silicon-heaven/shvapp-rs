@@ -6,11 +6,18 @@ use async_trait::async_trait;
 use crate::utils;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Mutex;
+use std::sync::Arc;
 
 pub struct NodesTree {
-    pub root: Option<TreeNode>,
+    pub root: Arc<Mutex<TreeNode>>,
 }
 impl NodesTree {
+    pub fn new(root: TreeNode) -> Self {
+        NodesTree {
+            root: Arc::new(Mutex::new(root))
+        }
+    }
     pub async fn process_request(&mut self, request: &RpcMessage) -> crate::Result<RpcValue>  {
         if !request.is_request() {
             return Err("Not request".into());
@@ -43,7 +50,8 @@ impl NodesTree {
                 }
             }
             debug!("dir - method pattern: {}, attrs pattern: {}", method_pattern, attrs_pattern);
-            return nd.dir(path, &method_pattern, attrs_pattern).await;
+            let g = nd.lock().unwrap();
+            return g.dir(path, &method_pattern, attrs_pattern).await;
         } else if method == "ls" {
             let mut name_pattern = "".to_string();
             let mut ls_attrs = 0;
@@ -62,48 +70,62 @@ impl NodesTree {
                 }
             }
             debug!("name pattern: {}, with_children_info: {}", name_pattern, ls_attrs);
-            return nd.ls(path, &name_pattern, ls_attrs).await;
+            let g = nd.lock().unwrap();
+            return g.ls(path, &name_pattern, ls_attrs).await;
         } else {
-            return nd.call_method(path, method, params).await;
+            let mut g = nd.lock().unwrap();
+            return g.call_method(path, method, params).await;
         }
     }
 
-    fn cd(&mut self, path: &[&str]) -> crate::Result<(&mut TreeNode, usize)> {
-        match &mut self.root {
-            None => {return Err("Root node is not set".into())}
-            Some(root) => {
-                let mut pnd = root;
-                let mut ix = 0;
-                for p in path {
-                    for nd in pnd.child_nodes.iter_mut() {
-                        if &nd.name == p {
-                            // pnd = nd;
-                            break;
-                        } else {
-                            // return Err("abc".into())
-                            return Ok((nd, ix))
-                        }
-                    }
+    fn cd(&self, path: &[&str]) -> crate::Result<(Arc<Mutex<TreeNode>>, usize)> {
+        fn find_node(pnd: &Arc<Mutex<TreeNode>>, name: &str) -> Option<Arc<Mutex<TreeNode>>> {
+            let g_pnd = pnd.lock().unwrap();
+            for nd in g_pnd.child_nodes.iter() {
+                let g_nd = nd.lock().unwrap();
+                if &g_nd.name == name {
+                    return Some(nd.clone());
+                }
+            }
+            None
+        }
+        let mut pnd = self.root.clone();
+        let mut ix = 0;
+        for p in path {
+            let opnd = find_node(&pnd, p);
+            match opnd {
+                Some(nd) => {
+                    pnd = nd;
                     ix += 1;
                 }
-                return Ok((root, 0))
+                None => {
+                    return Ok((pnd.clone(), ix))
+                }
             }
         }
+        return Ok((self.root.clone(), 0))
     }
 }
-
+type ChildNodeRefType = Arc<Mutex<TreeNode>>;
 pub struct TreeNode {
     pub name: String,
     pub processors: Vec<Box<dyn RpcMethodProcessor>>,
-    pub child_nodes: Vec<Box<TreeNode>>,
+    pub child_nodes: Vec<ChildNodeRefType>,
 }
 
 impl TreeNode {
-    fn add_child_node(&mut self, nd: Box<TreeNode>) -> &mut Self {
-        self.child_nodes.push(nd);
+    pub fn new(name: &str) -> Self {
+        TreeNode {
+            name: name.to_string(),
+            processors: Vec::new(),
+            child_nodes: Vec::new(),
+        }
+    }
+    pub fn add_child_node(&mut self, nd: TreeNode) -> &mut Self {
+        self.child_nodes.push(Arc::new(Mutex::new(nd)));
         self
     }
-    fn is_leaf(&self) -> bool {
+    pub fn is_leaf(&self) -> bool {
         if !self.child_nodes.is_empty() {
             return false;
         }
@@ -162,8 +184,9 @@ impl TreeNode {
             }
         }
         for nd in self.child_nodes.iter() {
-            if filter(&nd.name, nd.is_leaf()) {
-                lst.push(map(&nd.name, nd.is_leaf()));
+            let g = nd.lock().unwrap();
+            if filter(&g.name, g.is_leaf()) {
+                lst.push(map(&g.name, g.is_leaf()));
             }
         }
         // debug!("dir: {:?}", lst);

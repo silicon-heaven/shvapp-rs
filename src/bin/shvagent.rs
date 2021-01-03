@@ -13,7 +13,7 @@ use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::metamethod::{MetaMethod, Signature};
 use tokio::process::Command;
 use async_trait::async_trait;
-use shvapp::shvnode::{TreeNode, RpcMethodProcessor};
+use shvapp::shvnode::{TreeNode, RpcMethodProcessor, NodesTree};
 use shvapp::shvfsnode::FileSystemDirNode;
 
 #[derive(StructOpt, Debug)]
@@ -70,22 +70,25 @@ async fn main() -> shvapp::Result<()> {
     connection_params.device_id = device_id.to_string();
     connection_params.mount_point = cli.mount_point.unwrap_or("".to_string());
 
-    let mut shv_node = ShvTreeNode {
+    let mut root = TreeNode {
         name: String::new(),
         processors: vec![
             Box::new(ShvTreeNode::new()),
             Box::new(ApplicationMethods::new("ShvAgent", "ShvAgent", &device_id)),
             Box::new(ShvAgentNode::new()),
         ],
-        child_nodes: vec![Box::new(ShvTreeNode {
+        // child_nodes: vec![Box::new(Shv)],
+        child_nodes: vec![]
+    };
+    root.add_child_node(TreeNode {
             name: "fs".to_string(),
             processors: vec![
                 Box::new(ShvTreeNode::new()),
                 Box::new(FileSystemDirNode::new("/tmp")),
             ],
             child_nodes: vec![]
-        })],
-    };
+        });
+    let mut shv_tree = NodesTree::new(root);
     //let mut app_node = ShvAgentAppNode::new();
     //let dyn_app_node = (&mut app_node) as &dyn ShvNode;
     loop {
@@ -123,7 +126,7 @@ async fn main() -> shvapp::Result<()> {
                                     if msg.is_request() {
                                         match msg.prepare_response() {
                                             Ok(mut resp_msg) => {
-                                                let ret_val = shv_node.process_request(&msg).await;
+                                                let ret_val = shv_tree.process_request(&msg).await;
                                                 match ret_val {
                                                     Ok(rv) => {
                                                         resp_msg.set_result(rv);
@@ -175,14 +178,11 @@ impl ShvAgentNode {
 
 #[async_trait]
 impl RpcMethodProcessor for ShvAgentNode {
-    fn dir(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
+    async fn dir<'a>(&'a self, path: &'_[&str]) -> shvapp::Result<Vec<&'a MetaMethod>> {
         if path.is_empty() {
-            return self.methods.iter().map(|mm: &MetaMethod| {mm}).collect()
+            return Ok(self.methods.iter().map(|mm: &MetaMethod| {mm}).collect())
         }
-        return Vec::new()
-    }
-    fn children(&self, path: &[&str]) -> Vec<(String, Option<bool>)> {
-        return Vec::new()
+        return Ok(Vec::new())
     }
 
     async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> shvapp::Result<RpcValue> {
