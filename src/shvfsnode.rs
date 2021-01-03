@@ -1,4 +1,4 @@
-use crate::shvnode::RpcProcessor;
+use crate::shvnode::RpcMethodProcessor;
 use chainpack::metamethod::{MetaMethod, Signature};
 use chainpack::{RpcValue, metamethod};
 use async_trait::async_trait;
@@ -56,18 +56,12 @@ impl FileSystemDirNode {
 }
 
 #[async_trait]
-impl RpcProcessor for FileSystemDirNode {
-    fn methods(&self, path: &[&str]) -> Vec<&'_ MetaMethod> {
+impl RpcMethodProcessor for FileSystemDirNode {
+    async fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
         if !self.make_absolute_path(path).is_dir() {
-            return self.methods.iter().map(|mm: &MetaMethod| { mm }).collect()
+            return Ok(self.methods.iter().map(|mm: &MetaMethod| { mm }).collect())
         }
-        return Vec::new()
-    }
-    fn children(&self, path: &[&str]) -> Vec<(String, Option<bool>)> {
-        match self.children2(path) {
-            Ok(v) => v,
-            _ => Vec::new(),
-        }
+        return Ok(Vec::new())
     }
 
     async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {

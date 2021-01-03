@@ -8,12 +8,12 @@ use shvapp::client::{ConnectionParams};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::util::SubscriberInitExt;
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue, metamethod};
-use shvapp::appnode::{AppNode, BasicNode};
+use shvapp::appnode::{ApplicationMethods, ShvTreeNode};
 use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::metamethod::{MetaMethod, Signature};
 use tokio::process::Command;
 use async_trait::async_trait;
-use shvapp::shvnode::{ShvNode, RpcProcessor};
+use shvapp::shvnode::{TreeNode, RpcMethodProcessor};
 use shvapp::shvfsnode::FileSystemDirNode;
 
 #[derive(StructOpt, Debug)]
@@ -70,17 +70,17 @@ async fn main() -> shvapp::Result<()> {
     connection_params.device_id = device_id.to_string();
     connection_params.mount_point = cli.mount_point.unwrap_or("".to_string());
 
-    let mut shv_node = ShvNode {
+    let mut shv_node = ShvTreeNode {
         name: String::new(),
         processors: vec![
-            Box::new(BasicNode::new()),
-            Box::new(AppNode::new("ShvAgent", "ShvAgent", &device_id)),
+            Box::new(ShvTreeNode::new()),
+            Box::new(ApplicationMethods::new("ShvAgent", "ShvAgent", &device_id)),
             Box::new(ShvAgentNode::new()),
         ],
-        child_nodes: vec![Box::new(ShvNode {
+        child_nodes: vec![Box::new(ShvTreeNode {
             name: "fs".to_string(),
             processors: vec![
-                Box::new(BasicNode::new()),
+                Box::new(ShvTreeNode::new()),
                 Box::new(FileSystemDirNode::new("/tmp")),
             ],
             child_nodes: vec![]
@@ -174,8 +174,8 @@ impl ShvAgentNode {
 }
 
 #[async_trait]
-impl RpcProcessor for ShvAgentNode {
-    fn methods(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
+impl RpcMethodProcessor for ShvAgentNode {
+    fn dir(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
         if path.is_empty() {
             return self.methods.iter().map(|mm: &MetaMethod| {mm}).collect()
         }

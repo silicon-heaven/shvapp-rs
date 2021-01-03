@@ -1,13 +1,13 @@
 use chainpack::{RpcValue, metamethod};
 use tracing::debug;
 use chainpack::metamethod::{MetaMethod, Signature};
-use crate::shvnode::{RpcProcessor};
+use crate::shvnode::{RpcMethodProcessor};
 use async_trait::async_trait;
 
-pub struct BasicNode {
+pub struct ShvTreeNode {
     pub methods: Vec<MetaMethod>,
 }
-impl BasicNode {
+impl ShvTreeNode {
     pub fn new() -> Self {
         Self {
             methods: vec![
@@ -19,83 +19,27 @@ impl BasicNode {
 }
 
 #[async_trait]
-impl RpcProcessor for BasicNode {
-    fn methods(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
+impl RpcMethodProcessor for ShvTreeNode {
+    async fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
         if path.is_empty() {
-            return self.methods.iter().map(|mm: &MetaMethod| {mm}).collect()
+            return Ok(self.methods.iter().map(|mm: &MetaMethod| {mm}).collect())
         }
-        return Vec::new()
-    }
-    fn children(&self, path: &[&str]) -> Vec<(String, Option<bool>)> {
-        return Vec::new()
+        return Ok(Vec::new())
     }
 
     async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
         unimplemented!()
     }
-    // fn children(& self, path: &[&str]) -> Vec<(&'_ str, Option<bool>)> {
-    //     if path.is_empty() {
-    //         return Vec::new()
-    //     }
-    //     return Vec::new()
-    // }
-    /*
-    async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
-        if path.is_empty() {
-            if method == "dir" {
-                let mut method_pattern = "".to_string();
-                let mut attrs_pattern = 0;
-                if let Some(params) = params {
-                    if params.is_list() {
-                        let params = params.as_list();
-                        if params.len() >= 1 {
-                            method_pattern = params[0].as_str()?.to_string();
-                        }
-                        if params.len() >= 2 {
-                            //debug!("param [1]: {}", params[1]);
-                            attrs_pattern = params[1].as_u32();
-                        }
-                    } else {
-                        method_pattern = params.to_string();
-                    }
-                }
-                debug!("dir - method pattern: {}, attrs pattern: {}", method_pattern, attrs_pattern);
-                return Ok(self.dir(path, &method_pattern, attrs_pattern));
-            }
-            if method == "ls" {
-                let mut name_pattern = "".to_string();
-                let mut ls_attrs = 0;
-                if let Some(params) = params {
-                    if params.is_list() {
-                        let params = params.as_list();
-                        if params.len() >= 1 {
-                            name_pattern = params[0].as_str()?.to_string();
-                        }
-                        if params.len() >= 2 {
-                            //debug!("param [1]: {}", params[1]);
-                            ls_attrs = params[1].as_u32();
-                        }
-                    } else {
-                        name_pattern = params.to_string();
-                    }
-                }
-                debug!("name pattern: {}, with_children_info: {}", name_pattern, ls_attrs);
-                return Ok(self.ls(path, &name_pattern, ls_attrs));
-            }
-        }
-        Err(format!("Invalid method: '{}' on path: '{:?}' called", method, path).into())
-        //Err(format!("BasicNode::call_method() - Invalid path: {:?}", path).into())
-    }
-     */
 }
-pub struct AppNode {
+
+pub struct ApplicationMethods {
     pub app_name: String,
     pub device_id: String,
     pub device_type: String,
     methods: Vec<MetaMethod>,
 }
 
-impl AppNode {
+impl ApplicationMethods {
     pub fn new(app_name: &str, device_type: &str, device_id: &str) -> Self {
         Self {
             app_name: app_name.to_string(),
@@ -112,15 +56,12 @@ impl AppNode {
     }
 }
 #[async_trait]
-impl RpcProcessor for AppNode {
-    fn methods(& self, path: &[&str]) -> Vec<&'_ MetaMethod> {
+impl RpcMethodProcessor for ApplicationMethods {
+    async fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
         if path.is_empty() {
-            return self.methods.iter().map(|mm: &MetaMethod| {mm}).collect()
+            return Ok(self.methods.iter().map(|mm: &MetaMethod| {mm}).collect())
         }
-        return Vec::new()
-    }
-    fn children(&self, path: &[&str]) -> Vec<(String, Option<bool>)> {
-        return Vec::new()
+        return Ok(Vec::new())
     }
 
     async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
