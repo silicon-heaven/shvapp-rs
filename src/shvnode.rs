@@ -1,13 +1,13 @@
 use chainpack::metamethod::{MetaMethod, LsAttribute};
 use chainpack::rpcvalue::List;
 use chainpack::{RpcValue, RpcMessage, RpcMessageMetaTags, metamethod};
-use tracing::debug;
+use tracing::{debug, warn};
 use async_trait::async_trait;
 use crate::utils;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use parking_lot::Mutex;
+use tokio::sync::Mutex;
 
 pub struct NodesTree {
     pub root: TreeNode,
@@ -18,7 +18,7 @@ impl NodesTree {
             root,
         }
     }
-    pub async fn process_request(&mut self, request: &RpcMessage) -> crate::Result<RpcValue>  {
+    pub async fn process_request(& self, request: &RpcMessage) -> crate::Result<RpcValue>  {
         if !request.is_request() {
             return Err("Not request".into());
         }
@@ -28,9 +28,9 @@ impl NodesTree {
         debug!("path: {:?}", path);
         let method = request.method().ok_or("Method is empty")?;
         debug!("method: {}", method);
-        let nd = self.cd(&path)?;
-        let path = &path[nd.1 ..];
-        let nd = nd.0;
+        let nd_ix = self.cd(&path)?;
+        let nd = nd_ix.0;
+        let path = &path[nd_ix.1 ..];
         let params = request.params();
         if method == "dir" {
             let mut method_pattern = "".to_string();
@@ -50,7 +50,7 @@ impl NodesTree {
                 }
             }
             debug!("dir - method pattern: {}, attrs pattern: {}", method_pattern, attrs_pattern);
-            return nd.dir(path, &method_pattern, attrs_pattern);
+            return nd.dir(path, &method_pattern, attrs_pattern).await;
         } else if method == "ls" {
             let mut name_pattern = "".to_string();
             let mut ls_attrs = 0;
@@ -69,7 +69,7 @@ impl NodesTree {
                 }
             }
             debug!("name pattern: {}, with_children_info: {}", name_pattern, ls_attrs);
-            return nd.ls(path, &name_pattern, ls_attrs);
+            return nd.ls(path, &name_pattern, ls_attrs).await;
         } else {
             return nd.call_method(path, method, params).await;
         }
@@ -92,16 +92,18 @@ impl NodesTree {
                 Some(nd) => {
                     pnd = nd;
                     ix += 1;
+                    if ix == path.len() {
+                        return Ok((pnd, ix))
+                    }
                 }
                 None => {
-                    return Ok((pnd.clone(), ix))
+                    return Ok((pnd, ix))
                 }
             }
         }
         return Ok((&self.root, 0))
     }
 }
-//type ChildNodeRefType = Arc<Mutex<TreeNode>>;
 type ShvNodeRefType = Arc<Mutex<Box<dyn ShvNode>>>;
 pub struct TreeNode {
     pub name: String,
@@ -121,21 +123,28 @@ impl TreeNode {
         self.child_nodes.push(nd);
         self
     }
-    pub fn is_leaf(&self) -> bool {
+    async fn is_leaf(&self) -> bool {
         if !self.child_nodes.is_empty() {
             return false;
         }
-        let g = self.shv_node.lock();
-        if !g.is_leaf() {
+        let g = self.shv_node.lock().await;
+        if !g.is_leaf().await {
             return false;
         }
         return true;
     }
-    fn dir(& self, path: &[&str], method_pattern: &str, attrs_pattern: u32) -> crate::Result<RpcValue> {
-        debug!("dir method pattern: {}, attrs pattern: {}", method_pattern, attrs_pattern);
+    async fn dir(& self, path: &[&str], method_pattern: &str, attrs_pattern: u32) -> crate::Result<RpcValue> {
+        debug!("=== dir === node: '{}', path: {:?}, method pattern: {}, attrs pattern: {}", self.name, path, method_pattern, attrs_pattern);
+        let dir_ls: [&MetaMethod; 2] = [
+            &MetaMethod { name: "dir".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
+            &MetaMethod { name: "ls".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
+        ];
+        //let dir_ls = [&DIR_LS[0], &DIR_LS[1]];
+        let g = self.shv_node.lock().await;
+        let dir = g.dir(path).await?;
         let mut lst: List = Vec::new();
-        let g = self.shv_node.lock();
-        for mm in g.dir(path)? {
+        let it = dir_ls.iter().chain(&dir);
+        for mm in it {
             if method_pattern.is_empty() {
                 lst.push(mm.dir_attributes(attrs_pattern as u8));
             }
@@ -144,12 +153,12 @@ impl TreeNode {
                 break;
             }
         }
-        debug!("dir: {:?}", lst);
+        debug!("--- dir ---: {:?}", lst);
         return Ok(RpcValue::new(lst));
     }
-    fn ls(& self, path: &[&str], name_pattern: &str, ls_attrs_pattern: u32) -> crate::Result<RpcValue> {
+    async fn ls(& self, path: &[&str], name_pattern: &str, ls_attrs_pattern: u32) -> crate::Result<RpcValue> {
         let with_children_info = (ls_attrs_pattern & (LsAttribute::HasChildren as u32)) != 0;
-        debug!("ls name_pattern: {}, with_children_info: {}", name_pattern, with_children_info);
+        debug!("=== ls === node: '{}', path: {:?}, name_pattern: {}, with_children_info: {}", self.name, path, name_pattern, with_children_info);
         let filter = |name: &str, _is_leaf: bool| {
             if !name_pattern.is_empty() {
                 name_pattern == name
@@ -168,25 +177,26 @@ impl TreeNode {
             }
         };
         let mut lst = List::new();
-        let g = self.shv_node.lock();
-        if !g.is_leaf() {
-            for i in g.ls(path)? {
+        let g = self.shv_node.lock().await;
+        let is_leaf = g.is_leaf().await;
+        if !is_leaf {
+            for i in g.ls(path).await? {
                 if filter(&i.0, i.1) {
                     lst.push(map(&i.0, i.1));
                 }
             }
         }
         for nd in self.child_nodes.iter() {
-            if filter(&nd.name, g.is_leaf()) {
-                lst.push(map(&nd.name, nd.is_leaf()));
+            if filter(&nd.name, is_leaf) {
+                lst.push(map(&nd.name, nd.is_leaf().await));
             }
         }
-        // debug!("dir: {:?}", lst);
+        debug!("--- ls ---: {:?}", lst);
         return Ok(RpcValue::new(lst));
     }
     async fn call_method(&self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
-        let mut g = self.shv_node.lock();
-        for m in g.dir(path)?.iter() {
+        let mut g = self.shv_node.lock().await;
+        for m in g.dir(path).await?.iter() {
             // TDDO: check access rights
             if m.name == method {
                 return g.call_method(&path, method, params).await
@@ -198,15 +208,14 @@ impl TreeNode {
 
 #[async_trait]
 pub trait ShvNode: Send + Sync {
-    fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>>;
-    fn ls(&self, path: &[&str]) -> crate::Result<Vec<(String, bool)>> {
-        Ok(Vec::new())
-    }
-    fn is_leaf(&self) -> bool {
-        match self.ls(&[]) {
-            Ok(v) => v.is_empty(),
-            Err(_e) => true,
-        }
+    async fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>>;
+    async fn ls(&self, path: &[&str]) -> crate::Result<Vec<(String, bool)>>;
+    async fn is_leaf(&self) -> bool {
+        //match self.ls(&[]) {
+        //    Ok(v) => v.is_empty(),
+        //    Err(_e) => true,
+        //}
+        return false;
     }
     async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue>;
 }
@@ -218,19 +227,10 @@ pub struct MethodListShvNode<D> {
 }
 impl<D: Sized + Send + Sync> MethodListShvNode<D> {
     pub fn new(data: D) -> Self {
-        let mut ret = Self {
+        Self {
             data,
             methods: Vec::new(),
-        };
-        ret.add_method(
-            MetaMethod { name: "dir".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
-            Box::new(|_data: &mut D, _params: Option<&RpcValue>| -> crate::Result<RpcValue> { Err("dir should not be called directly".into()) }),
-        );
-        ret.add_method(
-            MetaMethod { name: "ls".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
-            Box::new(|_data: &mut D, _params: Option<&RpcValue>| -> crate::Result<RpcValue> { Err("ls should not be called directly".into()) })
-        );
-        ret
+        }
     }
     pub fn new_device(data: D, app_name: &str, device_id: &str) -> Self {
         let mut ret = Self::new(data);
@@ -253,13 +253,26 @@ impl<D: Sized + Send + Sync> MethodListShvNode<D> {
 }
 #[async_trait]
 impl <D: Sized + Send + Sync> ShvNode for MethodListShvNode<D> {
-    fn dir<'a>(&'a self, path: &[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
-        let ret: Vec<&MetaMethod> =  self.methods.iter().map(|m| &m.0).collect();
-        Ok(ret)
-    }
-    async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
+    async fn dir<'a>(&'a self, path: &[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
         if path.is_empty() {
-            return Err(format!("Path {:?} should be empty", path).into());
+            let ret: Vec<&MetaMethod> =  self.methods.iter().map(|m| &m.0).collect();
+            //warn!("{:?}", ret);
+            return Ok(ret)
+            //return Err(format!("dir: path {:?} should be empty", path).into());
+        }
+        return Ok(Vec::new());
+    }
+
+    async fn ls(&self, path: &[&str]) -> crate::Result<Vec<(String, bool)>> {
+        //if !path.is_empty() {
+        //    return Err(format!("ls: path {:?} should be empty", path).into());
+        //}
+        Ok(Vec::new())
+    }
+
+    async fn call_method(&mut self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
+        if !path.is_empty() {
+            return Err(format!("call_method: path {:?} should be empty", path).into());
         }
         for mm in self.methods.iter() {
             if method == mm.0.name {

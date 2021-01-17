@@ -16,7 +16,6 @@ impl FileSystemDirNode {
             root: root.into(),
             methods: vec![
                 MetaMethod { name: "read".into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("rd"), description: "Read file content".into() },
-                // MetaMethod { name: "ls".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
             ]
         }
     }
@@ -34,7 +33,7 @@ impl FileSystemDirNode {
             _ => true,
         }
     }
-    fn children2(&self, path: &[&str]) -> io::Result<Vec<(String, Option<bool>)>> {
+    fn children2(&self, path: &[&str]) -> crate::Result<Vec<(String, bool)>> {
         let mut pb = self.make_absolute_path(path);
         if pb.is_dir() {
             let mut ret = Vec::new();
@@ -44,7 +43,7 @@ impl FileSystemDirNode {
                     let fname = entry.file_name().into_string().unwrap_or_default();
                     let is_dir = self.is_dir_empty(&pb);
                     debug!("------------------------------------------- {} is dir: {}", fname, is_dir);
-                    let e = (fname, Some(is_dir));
+                    let e = (fname, is_dir);
                     pb.pop();
                     ret.push(e);
                 }
@@ -57,11 +56,15 @@ impl FileSystemDirNode {
 
 #[async_trait]
 impl ShvNode for FileSystemDirNode {
-    fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
+    async fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
         if !self.make_absolute_path(path).is_dir() {
             return Ok(self.methods.iter().map(|mm: &MetaMethod| { mm }).collect())
         }
         return Ok(Vec::new())
+    }
+
+    async fn ls(&self, path: &[&str]) -> crate::Result<Vec<(String, bool)>> {
+        return self.children2(path);
     }
 
     async fn call_method(&mut self, path: &[&str], method: &str, _params: Option<&RpcValue>) -> crate::Result<RpcValue> {
@@ -72,3 +75,4 @@ impl ShvNode for FileSystemDirNode {
         Err(format!("Unknown method {}", method).into())
     }
 }
+
