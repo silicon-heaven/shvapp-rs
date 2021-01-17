@@ -11,10 +11,12 @@ use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue, metamethod};
 use shvapp::appnode::{ApplicationMethods, ShvTreeNode};
 use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::metamethod::{MetaMethod, Signature};
-use tokio::process::Command;
+use std::process::Command;
 use async_trait::async_trait;
-use shvapp::shvnode::{TreeNode, RpcMethodProcessor, NodesTree};
+use shvapp::shvnode::{TreeNode, ShvNode, NodesTree, MethodListShvNode};
 use shvapp::shvfsnode::FileSystemDirNode;
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
@@ -72,22 +74,18 @@ async fn main() -> shvapp::Result<()> {
 
     let mut root = TreeNode {
         name: String::new(),
-        processors: vec![
-            Box::new(ShvTreeNode::new()),
-            Box::new(ApplicationMethods::new("ShvAgent", "ShvAgent", &device_id)),
-            Box::new(ShvAgentNode::new()),
-        ],
+        shv_node: Arc::new(Mutex::new(Box::new(create_shvagent_node(&device_id)))),
         // child_nodes: vec![Box::new(Shv)],
         child_nodes: vec![]
     };
-    root.add_child_node(TreeNode {
-            name: "fs".to_string(),
-            processors: vec![
-                Box::new(ShvTreeNode::new()),
-                Box::new(FileSystemDirNode::new("/tmp")),
-            ],
-            child_nodes: vec![]
-        });
+    //root.add_child_node(TreeNode {
+    //        name: "fs".to_string(),
+    //        shv_node: vec![
+    //            Box::new(ShvTreeNode::new()),
+    //            Box::new(FileSystemDirNode::new("/tmp")),
+    //        ],
+    //        child_nodes: vec![]
+    //    });
     let mut shv_tree = NodesTree::new(root);
     //let mut app_node = ShvAgentAppNode::new();
     //let dyn_app_node = (&mut app_node) as &dyn ShvNode;
@@ -126,16 +124,27 @@ async fn main() -> shvapp::Result<()> {
                                     if msg.is_request() {
                                         match msg.prepare_response() {
                                             Ok(mut resp_msg) => {
-                                                let ret_val = shv_tree.process_request(&msg).await;
-                                                match ret_val {
-                                                    Ok(rv) => {
-                                                        resp_msg.set_result(rv);
+                                                let fut = shv_tree.process_request(&msg);
+                                                let mut client = client.clone();
+                                                tokio::spawn(async move {
+                                                    let ret_val = fut.await;
+                                                    match ret_val {
+                                                        Ok(rv) => {
+                                                            resp_msg.set_result(rv);
+                                                        }
+                                                        Err(e) => {
+                                                            resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
+                                                        }
                                                     }
-                                                    Err(e) => {
-                                                        resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
+                                                    match client.send(resp_msg).await {
+                                                        Ok(_) => {
+                                                            debug!("Send response OK");
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("Send response error: {}.", e);
+                                                        }
                                                     }
-                                                }
-                                                client.send(resp_msg).await?;
+                                                });
                                             }
                                             Err(e) => {
                                                 warn!("Create response meta error: {}.", e);
@@ -162,23 +171,31 @@ async fn main() -> shvapp::Result<()> {
     }
 }
 
-struct ShvAgentNode {
-    methods: Vec<MetaMethod>,
-}
-
-impl ShvAgentNode {
-    pub fn new() -> Self {
-        Self {
-            methods: vec![
-                MetaMethod { name: "runCmd".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("cmd"), description: "params: [\"command\", [param1, ...], {\"envkey1\": \"envval1\"}, 1, 2], only the command is mandatory".into() }
-            ],
-        }
-    }
-}
-
-#[async_trait]
-impl RpcMethodProcessor for ShvAgentNode {
-    async fn dir<'a>(&'a self, path: &'_[&str]) -> shvapp::Result<Vec<&'a MetaMethod>> {
+type ShvAgentNodeData = ();
+type ShvAgentNode = MethodListShvNode<ShvAgentNodeData>;
+fn create_shvagent_node(device_id: &str) -> ShvAgentNode {
+    let mut ret = ShvAgentNode::<ShvAgentNodeData>::new_device((), "ShvAgent", device_id);
+    ret.add_method(
+        MetaMethod { name: "runCmd".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("cmd"), description: "params: [\"command\", [param1, ...], {\"envkey1\": \"envval1\"}, 1, 2], only the command is mandatory".into() },
+        Box::new(move |data: &mut ShvAgentNodeData, params: Option<&RpcValue>| -> shvapp::Result<RpcValue> {
+            let params = params.ok_or("no params specified")?.as_list();
+            let cmd = params.get(0).ok_or("no command specified")?.as_str()?;
+            let mut child = Command::new(cmd);
+            if let Some(args) = params.get(1) {
+                for arg in args.as_list() {
+                    child.arg(arg.as_str()?);
+                }
+            }
+            let output = child.output()?;
+            // Await until the command completes
+            //let output = output.await?;
+            let out: &[u8] = &output.stdout;
+            return Ok(RpcValue::new(out))
+        })
+    );
+    ret
+    /*
+    fn dir<'a>(&'a self, path: &'_[&str]) -> shvapp::Result<Vec<&'a MetaMethod>> {
         if path.is_empty() {
             return Ok(self.methods.iter().map(|mm: &MetaMethod| {mm}).collect())
         }
@@ -205,4 +222,5 @@ impl RpcMethodProcessor for ShvAgentNode {
         }
         Err(format!("Unknown method: {} on path: {:?}", method, path).into())
     }
+     */
 }

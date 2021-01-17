@@ -1,7 +1,7 @@
 use chainpack::{RpcValue, metamethod};
 use tracing::debug;
 use chainpack::metamethod::{MetaMethod, Signature};
-use crate::shvnode::{RpcMethodProcessor};
+use crate::shvnode::{ShvNode};
 use async_trait::async_trait;
 
 pub struct ShvTreeNode {
@@ -19,8 +19,8 @@ impl ShvTreeNode {
 }
 
 #[async_trait]
-impl RpcMethodProcessor for ShvTreeNode {
-    async fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
+impl ShvNode for ShvTreeNode {
+    fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
         if path.is_empty() {
             return Ok(self.methods.iter().map(|mm: &MetaMethod| {mm}).collect())
         }
@@ -56,8 +56,8 @@ impl ApplicationMethods {
     }
 }
 #[async_trait]
-impl RpcMethodProcessor for ApplicationMethods {
-    async fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
+impl ShvNode for ApplicationMethods {
+    fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
         if path.is_empty() {
             return Ok(self.methods.iter().map(|mm: &MetaMethod| {mm}).collect())
         }
