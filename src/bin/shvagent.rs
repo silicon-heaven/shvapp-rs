@@ -120,21 +120,47 @@ async fn main() -> shvapp::Result<()> {
                                     if msg.is_request() {
                                         match msg.prepare_response() {
                                             Ok(mut resp_msg) => {
-                                                let ret_val = shv_tree.process_request(&msg).await;
-                                                match ret_val {
-                                                    Ok(rv) => {
-                                                        resp_msg.set_result(rv);
-                                                    }
-                                                    Err(e) => {
-                                                        resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
-                                                    }
+                                                const true_async: bool = false;
+                                                if true_async {
+                                                    let fut = shv_tree.process_request(msg);
+                                                    let mut client = client.clone();
+                                                    tokio::spawn(async move {
+                                                        let ret_val = fut.await;
+                                                        match ret_val {
+                                                            Ok(rv) => {
+                                                                resp_msg.set_result(rv);
+                                                            }
+                                                            Err(e) => {
+                                                                resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
+                                                            }
+                                                        }
+                                                        match client.send(resp_msg).await {
+                                                            Ok(_) => {
+                                                                debug!("Send response OK");
+                                                            }
+                                                            Err(e) => {
+                                                                warn!("Send response error: {}.", e);
+                                                            }
+                                                        }
+                                                    });
                                                 }
-                                                match client.send(resp_msg).await {
-                                                    Ok(_) => {
-                                                        debug!("Send response OK");
+                                                else {
+                                                    let ret_val = shv_tree.process_request(msg).await;
+                                                    match ret_val {
+                                                        Ok(rv) => {
+                                                            resp_msg.set_result(rv);
+                                                        }
+                                                        Err(e) => {
+                                                            resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
+                                                        }
                                                     }
-                                                    Err(e) => {
-                                                        warn!("Send response error: {}.", e);
+                                                    match client.send(resp_msg).await {
+                                                        Ok(_) => {
+                                                            debug!("Send response OK");
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("Send response error: {}.", e);
+                                                        }
                                                     }
                                                 }
                                             }

@@ -18,7 +18,7 @@ impl NodesTree {
             root,
         }
     }
-    pub async fn process_request(& self, request: &RpcMessage) -> crate::Result<RpcValue>  {
+    pub async fn process_request(& self, request: RpcMessage) -> crate::Result<RpcValue>  {
         if !request.is_request() {
             return Err("Not request".into());
         }
