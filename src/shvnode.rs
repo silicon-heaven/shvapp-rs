@@ -8,6 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use futures::future::{BoxFuture, FutureExt};
 
 pub struct NodesTree {
     pub root: TreeNode,
@@ -18,60 +19,19 @@ impl NodesTree {
             root,
         }
     }
-    pub async fn process_request(& self, request: &RpcMessage) -> crate::Result<RpcValue>  {
-        if !request.is_request() {
-            return Err("Not request".into());
-        }
-        debug!("request: {}", request);
+    pub fn process_request(& self, mut request: RpcMessage) -> BoxFuture<'static, crate::Result<RpcValue>>  {
         let shv_path = request.shv_path().unwrap_or("");
         let path = utils::split_shv_path(shv_path);
         debug!("path: {:?}", path);
-        let method = request.method().ok_or("Method is empty")?;
-        debug!("method: {}", method);
-        let nd_ix = self.cd(&path)?;
-        let nd = nd_ix.0;
-        let path = &path[nd_ix.1 ..];
-        let params = request.params();
-        if method == "dir" {
-            let mut method_pattern = "".to_string();
-            let mut attrs_pattern = 0;
-            if let Some(params) = params {
-                if params.is_list() {
-                    let params = params.as_list();
-                    if params.len() >= 1 {
-                        method_pattern = params[0].as_str()?.to_string();
-                    }
-                    if params.len() >= 2 {
-                        //debug!("param [1]: {}", params[1]);
-                        attrs_pattern = params[1].as_u32();
-                    }
-                } else {
-                    method_pattern = params.to_string();
-                }
+        match self.cd(&path) {
+            Ok((nd, ix)) => {
+                let new_path = utils::join_shv_path(&path[ix ..]);
+                request.set_shvpath(&new_path);
+                return nd.call_method(request)
             }
-            debug!("dir - method pattern: {}, attrs pattern: {}", method_pattern, attrs_pattern);
-            return nd.dir(path, &method_pattern, attrs_pattern).await;
-        } else if method == "ls" {
-            let mut name_pattern = "".to_string();
-            let mut ls_attrs = 0;
-            if let Some(params) = params {
-                if params.is_list() {
-                    let params = params.as_list();
-                    if params.len() >= 1 {
-                        name_pattern = params[0].as_str()?.to_string();
-                    }
-                    if params.len() >= 2 {
-                        //debug!("param [1]: {}", params[1]);
-                        ls_attrs = params[1].as_u32();
-                    }
-                } else {
-                    name_pattern = params.to_string();
-                }
-            }
-            debug!("name pattern: {}, with_children_info: {}", name_pattern, ls_attrs);
-            return nd.ls(path, &name_pattern, ls_attrs).await;
-        } else {
-            return nd.call_method(path, method, params).await;
+            Err(e) => async move {
+                 Err(e.into())
+            }.boxed()
         }
     }
 
@@ -133,14 +93,14 @@ impl TreeNode {
         }
         return true;
     }
-    async fn dir(& self, path: &[&str], method_pattern: &str, attrs_pattern: u32) -> crate::Result<RpcValue> {
+    fn dir(& self, path: &[&str], method_pattern: &str, attrs_pattern: u32) -> crate::Result<RpcValue> {
         debug!("=== dir === node: '{}', path: {:?}, method pattern: {}, attrs pattern: {}", self.name, path, method_pattern, attrs_pattern);
         let dir_ls: [&MetaMethod; 2] = [
             &MetaMethod { name: "dir".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
             &MetaMethod { name: "ls".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
         ];
         //let dir_ls = [&DIR_LS[0], &DIR_LS[1]];
-        let g = self.shv_node.lock().await;
+        let g = shv_node.lock().await;
         let dir = g.dir(path).await?;
         let mut lst: List = Vec::new();
         let it = dir_ls.iter().chain(&dir);
@@ -156,7 +116,7 @@ impl TreeNode {
         debug!("--- dir ---: {:?}", lst);
         return Ok(RpcValue::new(lst));
     }
-    async fn ls(& self, path: &[&str], name_pattern: &str, ls_attrs_pattern: u32) -> crate::Result<RpcValue> {
+    fn ls(& self, path: &[&str], name_pattern: &str, ls_attrs_pattern: u32) -> crate::Result<RpcValue> {
         let with_children_info = (ls_attrs_pattern & (LsAttribute::HasChildren as u32)) != 0;
         debug!("=== ls === node: '{}', path: {:?}, name_pattern: {}, with_children_info: {}", self.name, path, name_pattern, with_children_info);
         let filter = |name: &str, _is_leaf: bool| {
@@ -177,7 +137,7 @@ impl TreeNode {
             }
         };
         let mut lst = List::new();
-        let g = self.shv_node.lock().await;
+        let g = shv_node.lock().await;
         let is_leaf = g.is_leaf().await;
         if !is_leaf {
             for i in g.ls(path).await? {
@@ -194,15 +154,71 @@ impl TreeNode {
         debug!("--- ls ---: {:?}", lst);
         return Ok(RpcValue::new(lst));
     }
-    async fn call_method(&self, path: &[&str], method: &str, params: Option<&RpcValue>) -> crate::Result<RpcValue> {
-        let mut g = self.shv_node.lock().await;
-        for m in g.dir(path).await?.iter() {
-            // TDDO: check access rights
-            if m.name == method {
-                return g.call_method(&path, method, params).await
+    fn call_method(&self, mut request: RpcMessage) -> BoxFuture<'static, crate::Result<RpcValue>> {
+        let shv_node = self.shv_node.clone();
+        async move {
+            if !request.is_request() {
+                Err("Not request".into())
             }
-        }
-        Err(format!("Unknown method: {} on path: {:?}", method, path).into())
+            debug!("request: {}", request);
+            let shv_path = request.shv_path().unwrap_or("");
+            let path = utils::split_shv_path(shv_path);
+            debug!("path: {:?}", path);
+            let method = request.method().ok_or("Method is empty")?;
+            debug!("method: {}", method);
+            let nd_ix = self.cd(&path)?;
+            let nd = nd_ix.0;
+            let path = &path[nd_ix.1 ..];
+            let params = request.params();
+            if method == "dir" {
+                let mut method_pattern = "".to_string();
+                let mut attrs_pattern = 0;
+                if let Some(params) = params {
+                    if params.is_list() {
+                        let params = params.as_list();
+                        if params.len() >= 1 {
+                            method_pattern = params[0].as_str()?.to_string();
+                        }
+                        if params.len() >= 2 {
+                            //debug!("param [1]: {}", params[1]);
+                            attrs_pattern = params[1].as_u32();
+                        }
+                    } else {
+                        method_pattern = params.to_string();
+                    }
+                }
+                debug!("dir - method pattern: {}, attrs pattern: {}", method_pattern, attrs_pattern);
+                return nd.dir(path, &method_pattern, attrs_pattern);
+            } else if method == "ls" {
+                let mut name_pattern = "".to_string();
+                let mut ls_attrs = 0;
+                if let Some(params) = params {
+                    if params.is_list() {
+                        let params = params.as_list();
+                        if params.len() >= 1 {
+                            name_pattern = params[0].as_str()?.to_string();
+                        }
+                        if params.len() >= 2 {
+                            //debug!("param [1]: {}", params[1]);
+                            ls_attrs = params[1].as_u32();
+                        }
+                    } else {
+                        name_pattern = params.to_string();
+                    }
+                }
+                debug!("name pattern: {}, with_children_info: {}", name_pattern, ls_attrs);
+                return nd.ls(path, &name_pattern, ls_attrs);
+            } else {
+                let mut g = shv_node.lock().await;
+                for m in g.dir(path).await?.iter() {
+                    // TDDO: check access rights
+                    if m.name == method {
+                        return g.call_method(&path, method, params).await
+                    }
+                }
+                Err(format!("Unknown method: {} on path: {:?}", method, path).into())
+            }
+        }.boxed()
     }
 }
 
