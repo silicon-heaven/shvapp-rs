@@ -72,21 +72,21 @@ async fn main() -> shvapp::Result<()> {
 
     let mut root = TreeNode {
         name: String::new(),
-        processors: vec![
+        processor: vec![
             Box::new(ShvTreeNode::new()),
             Box::new(ApplicationMethods::new("ShvAgent", "ShvAgent", &device_id)),
             Box::new(ShvAgentNode::new()),
         ],
         // child_nodes: vec![Box::new(Shv)],
-        child_nodes: vec![]
+        children: vec![]
     };
     root.add_child_node(TreeNode {
             name: "fs".to_string(),
-            processors: vec![
+            processor: vec![
                 Box::new(ShvTreeNode::new()),
                 Box::new(FileSystemDirNode::new("/tmp")),
             ],
-            child_nodes: vec![]
+            children: vec![]
         });
     let mut shv_tree = NodesTree::new(root);
     //let mut app_node = ShvAgentAppNode::new();
