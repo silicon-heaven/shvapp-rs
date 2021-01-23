@@ -24,6 +24,13 @@ pub fn split_shv_path(path: &str) -> Vec<&str> {
         .collect();
     return v
 }
+pub fn shv_path_cut_first(path: &str) -> (&str, &str) {
+    let ix = path.find('/');
+    match ix {
+        Some(ix) => (&path[ .. ix], &path[ix + 1 .. ]),
+        None => (path, &path[path.len() ..])
+    }
+}
 
 pub fn join_shv_path(path: &[&str]) -> String {
     let mut s = String::new();
