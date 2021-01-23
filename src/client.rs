@@ -14,6 +14,8 @@ use tokio::sync::{mpsc, broadcast};
 
 const DEFAULT_RPC_CALL_TIMEOUT_MS: u64 = 5000;
 
+pub type RpcMessageSender = mpsc::Sender<RpcMessage>;
+
 #[derive(Copy, Clone)]
 pub enum PasswordType {
     PLAIN,
@@ -80,7 +82,7 @@ impl ConnectionParams {
 
 pub struct Client {
     //connection: Arc<ClientConnection>,
-    send_message_tx: mpsc::Sender<RpcMessage>,
+    send_message_tx: RpcMessageSender,
     recv_message_rx: broadcast::Receiver<RpcMessage>,
     // recv_message_rx cannot be cloned, we have to keep TX end to make TX.subscribe() happen
     // when cloning client
@@ -252,7 +254,7 @@ impl Client {
             Err(_) => Err(format!("Response to request id: {} didn't arrive within {} msec.", rq_id, DEFAULT_RPC_CALL_TIMEOUT_MS).into()),
         }
     }
-    pub async fn send(&mut self, msg: RpcMessage) -> crate::Result<()> {
+    pub async fn send(& self, msg: RpcMessage) -> crate::Result<()> {
         self.send_message_tx.send(msg).await?;
         Ok(())
     }
@@ -262,6 +264,10 @@ impl Client {
     }
     pub async fn receive_timeout(&mut self, timeout: Duration) -> crate::Result<RpcMessage> {
         tokio::time::timeout(timeout, self.receive()).await?
+    }
+
+    pub fn clone_sender(& self) -> RpcMessageSender {
+        self.send_message_tx.clone()
     }
 }
 

@@ -19,7 +19,7 @@ pub mod server;
 
 pub mod utils;
 pub mod shvnode;
-pub mod shvfsnode;
+// pub mod shvfsnode;
 
 mod shutdown;
 use shutdown::Shutdown;

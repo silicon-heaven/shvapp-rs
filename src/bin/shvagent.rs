@@ -14,8 +14,7 @@ use std::process::Command;
 use async_trait::async_trait;
 use shvapp::shvnode::{TreeNode, ShvNode, NodesTree, MethodListShvNode};
 use shvapp::shvfsnode::FileSystemDirNode;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
@@ -118,56 +117,36 @@ async fn main() -> shvapp::Result<()> {
                                 Ok(msg) => {
                                     debug!("Message arrived: {}", msg);
                                     if msg.is_request() {
-                                        match msg.prepare_response() {
-                                            Ok(mut resp_msg) => {
-                                                const true_async: bool = false;
-                                                if true_async {
-                                                    let fut = shv_tree.process_request(msg);
-                                                    let mut client = client.clone();
-                                                    tokio::spawn(async move {
-                                                        let ret_val = fut.await;
-                                                        match ret_val {
-                                                            Ok(rv) => {
-                                                                resp_msg.set_result(rv);
-                                                            }
-                                                            Err(e) => {
-                                                                resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
-                                                            }
-                                                        }
-                                                        match client.send(resp_msg).await {
-                                                            Ok(_) => {
-                                                                debug!("Send response OK");
-                                                            }
-                                                            Err(e) => {
-                                                                warn!("Send response error: {}.", e);
-                                                            }
-                                                        }
-                                                    });
-                                                }
-                                                else {
-                                                    let ret_val = shv_tree.process_request(msg).await;
-                                                    match ret_val {
-                                                        Ok(rv) => {
-                                                            resp_msg.set_result(rv);
-                                                        }
-                                                        Err(e) => {
-                                                            resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
-                                                        }
-                                                    }
-                                                    match client.send(resp_msg).await {
-                                                        Ok(_) => {
-                                                            debug!("Send response OK");
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("Send response error: {}.", e);
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                        let sender = client.clone_sender();
+                                        match shv_tree.process_request(&sender, &msg) {
                                             Err(e) => {
-                                                warn!("Create response meta error: {}.", e);
+                                                warn!("Process request error: {}.", e);
                                             }
+                                            _ => {}
                                         }
+                                        // match msg.prepare_response() {
+                                        //     Ok(mut resp_msg) => {
+                                        //         match ret_val {
+                                        //             Ok(rv) => {
+                                        //                 resp_msg.set_result(rv);
+                                        //             }
+                                        //             Err(e) => {
+                                        //                 resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
+                                        //             }
+                                        //         }
+                                        //         match client.send(resp_msg).await {
+                                        //             Ok(_) => {
+                                        //                 debug!("Send response OK");
+                                        //             }
+                                        //             Err(e) => {
+                                        //                 warn!("Send response error: {}.", e);
+                                        //             }
+                                        //         }
+                                        //     }
+                                        //     Err(e) => {
+                                        //         warn!("Create response meta error: {}.", e);
+                                        //     }
+                                        // }
                                     }
                                 }
                                 Err(e) => {

@@ -1,10 +1,11 @@
-use crate::shvnode::ShvNode;
+use crate::shvnode::{ShvNode, ShvResult};
 use chainpack::metamethod::{MetaMethod, Signature};
-use chainpack::{RpcValue, metamethod};
+use chainpack::{RpcValue, metamethod, RpcMessage, RpcMessageMetaTags};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::{io, fs};
 use tracing::{warn, info, debug};
+use crate::utils;
 
 pub struct FileSystemDirNode {
     root: String,
@@ -56,20 +57,23 @@ impl FileSystemDirNode {
 
 #[async_trait]
 impl ShvNode for FileSystemDirNode {
-    async fn dir<'a>(&'a self, path: &'_[&str]) -> crate::Result<Vec<&'a MetaMethod>> {
-        if !self.make_absolute_path(path).is_dir() {
-            return Ok(self.methods.iter().map(|mm: &MetaMethod| { mm }).collect())
+    fn dir<'a>(&'a self, path: &'_ str) -> ShvResult<Vec<&'a MetaMethod>> {
+        if !self.make_absolute_path(&*utils::split_shv_path(path)).is_dir() {
+            return Ok(Some(self.methods.iter().map(|mm: &MetaMethod| { mm }).collect()))
         }
-        return Ok(Vec::new())
+        return Ok(Some(Vec::new()))
     }
 
-    async fn ls(&self, path: &[&str]) -> crate::Result<Vec<(String, bool)>> {
-        return self.children2(path);
+    fn ls(&self, path: &str) -> ShvResult<Vec<(String, bool)>> {
+        return Ok(Some(self.children2(&*utils::split_shv_path(path))?));
     }
 
-    async fn call_method(&mut self, path: &[&str], method: &str, _params: Option<&RpcValue>) -> crate::Result<RpcValue> {
+    fn call_method(&mut self, request: &RpcMessage) -> ShvResult<RpcValue> {
+        let method = request.method().ok_or("Method is empty")?;
+        debug!("method: {}", method);
+        let path = request.shv_path().unwrap_or("");
         if method == "read" {
-            let data = fs::read(self.make_absolute_path(path))?;
+            let data = fs::read(self.make_absolute_path(&*utils::split_shv_path(path)))?;
             return Ok(RpcValue::new(data))
         }
         Err(format!("Unknown method {}", method).into())
