@@ -12,36 +12,20 @@ use crate::client::RpcMessageSender;
 
 pub type ShvResult = crate::Result<Option<RpcValue>>;
 
-pub trait ShvNode: Send + Sync {
-    fn is_dir(&self) -> Option<bool>;
-    fn process_request(&mut self, sender: &RpcMessageSender, request: &RpcMessage, path: &str) -> ShvResult;
-}
-
-pub struct NodesTree {
-    pub root: ShvNodeRefType,
-}
-impl NodesTree {
-    pub fn new(root: Box<dyn ShvNode>) -> Self {
-        NodesTree {
-            root: Arc::new(Mutex::new(root)),
-        }
-    }
-    pub fn process_request(& self, sender: &RpcMessageSender, request: &RpcMessage) -> crate::Result<()>  {
-        let shv_path = request.shv_path().unwrap_or("");
-        let mut g = self.root.lock()?;
-        g.process_request(sender, request, shv_path)?;
-        Ok(())
-    }
+#[async_trait]
+pub trait ShvNode {
+    async fn is_dir(&self) -> Option<bool>;
+    async fn process_request(&mut self, sender: &RpcMessageSender, request: &RpcMessage, path: &str) -> ShvResult;
 }
 
 type ShvNodeRefType = Arc<Mutex<Box<dyn ShvNode>>>;
-type MethodHandlerResult = ShvResult;
-pub type MethodHandler = Box<dyn Fn(Option<RpcValue>) -> MethodHandlerResult>;
-pub struct MethodListShvNode {
+type MethodHandlerResult = Result<RpcValue, String>;
+pub type MethodHandler = Fn(Option<RpcValue>) -> MethodHandlerResult;
+pub struct ShvTreeNode {
     methods: Vec<(MetaMethod, MethodHandler)>,
     children: Vec<(String, ShvNodeRefType)>,
 }
-impl MethodListShvNode {
+impl ShvTreeNode {
     pub fn new() -> Self {
         Self {
             methods: Vec::new(),
@@ -54,33 +38,34 @@ impl MethodListShvNode {
         ret.add_method(
             MetaMethod { name: "appName".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
             Box::new(|params| -> MethodHandlerResult {
-                Ok(Some(app_name))
+                Ok(app_name)
             }),
         );
-        let device_id = RpcValue::from(device_id);
-        ret.add_method(
-            MetaMethod { name: "deviceId".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
-            Box::new(|params| -> MethodHandlerResult {
-                Ok(Some(device_id))
-            })
-        );
+        // let device_id = RpcValue::from(device_id);
+        // ret.add_method(
+        //     MetaMethod { name: "deviceId".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
+        //     Box::new(|params| -> MethodHandlerResult {
+        //         Ok(device_id)
+        //     })
+        // );
         ret
     }
     pub fn add_method(&mut self, meta_method: MetaMethod, handler: MethodHandler) {
         let mm = (meta_method, handler);
         self.methods.push(mm);
     }
-    pub fn add_child_node(&mut self, nd: Box<dyn ShvNode>) -> &mut Self {
+    pub fn add_child_node(&mut self, name: &str, nd: Box<dyn ShvNode>) -> &mut Self {
         self.children.push((nd.name.clone(), Arc::new(Mutex::new(nd))));
         self
     }
 }
-impl ShvNode for MethodListShvNode {
-    fn is_dir(&self) -> Option<bool> {
+#[async_trait]
+impl ShvNode for ShvTreeNode {
+    async fn is_dir(&self) -> Option<bool> {
         Some(!self.children.is_empty())
     }
 
-    fn process_request(&mut self, sender: &RpcMessageSender, request: &RpcMessage, path: &str) -> ShvResult {
+    async fn process_request(&self, sender: &RpcMessageSender, request: &RpcMessage, path: &str) -> ShvResult {
         let shv_path = request.shv_path().unwrap_or("");
         let (node_name, path_rest) = utils::shv_path_cut_first(shv_path);
         if node_name.is_empty() {

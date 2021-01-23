@@ -12,7 +12,7 @@ use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::metamethod::{MetaMethod, Signature};
 use std::process::Command;
 use async_trait::async_trait;
-use shvapp::shvnode::{TreeNode, ShvNode, NodesTree, MethodListShvNode};
+use shvapp::shvnode::{TreeNode, ShvNode, NodesTree, ShvTreeNode};
 use shvapp::shvfsnode::FileSystemDirNode;
 use std::sync::{Arc, Mutex};
 
@@ -70,18 +70,14 @@ async fn main() -> shvapp::Result<()> {
     connection_params.device_id = device_id.to_string();
     connection_params.mount_point = cli.mount_point.unwrap_or("".to_string());
 
-    let mut root = TreeNode {
-        name: String::new(),
-        shv_node: Arc::new(Mutex::new(Box::new(create_shvagent_node(&device_id)))),
-        // child_nodes: vec![Box::new(Shv)],
-        child_nodes: vec![]
-    };
-    root.add_child_node(TreeNode {
-            name: "fs".to_string(),
-            shv_node: Arc::new(Mutex::new(Box::new(FileSystemDirNode::new("/tmp")))),
-            child_nodes: vec![]
-        });
-    let shv_tree = NodesTree::new(root);
+    //let mut root = Arc::new(Mutex::new(Box::new(create_shvagent_node(&device_id))));
+    let mut root = Box::new(create_shvagent_node(&device_id));
+    // root.add_child_node(TreeNode {
+    //         name: "fs".to_string(),
+    //         shv_node: Arc::new(Mutex::new(Box::new(FileSystemDirNode::new("/tmp")))),
+    //         child_nodes: vec![]
+    //     });
+    let shv_tree = root;
     //let mut app_node = ShvAgentAppNode::new();
     //let dyn_app_node = (&mut app_node) as &dyn ShvNode;
     loop {
@@ -118,58 +114,43 @@ async fn main() -> shvapp::Result<()> {
                                     debug!("Message arrived: {}", msg);
                                     if msg.is_request() {
                                         let sender = client.clone_sender();
-                                        match shv_tree.process_request(&sender, &msg) {
-                                            Err(e) => {
-                                                warn!("Process request error: {}.", e);
+                                        let shv_path = msg.shv_path().ok_or("Empty SHV path")?;
+                                        if let Some(ret_val) = shv_tree.process_request(&sender, &msg, shv_path).await? {
+                                            match msg.prepare_response() {
+                                                Ok(mut resp_msg) => {
+                                                    match ret_val {
+                                                        Ok(rv) => {
+                                                            resp_msg.set_result(rv);
+                                                        }
+                                                        Err(e) => {
+                                                            resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
+                                                        }
+                                                    }
+                                                    match client.send(resp_msg).await {
+                                                        Ok(_) => { debug!("Send response OK"); }
+                                                        Err(e) => { warn!("Send response error: {}.", e); }
+                                                    }
+                                                }
+                                                Err(e) => { warn!("Create response meta error: {}.", e); }
                                             }
-                                            _ => {}
                                         }
-                                        // match msg.prepare_response() {
-                                        //     Ok(mut resp_msg) => {
-                                        //         match ret_val {
-                                        //             Ok(rv) => {
-                                        //                 resp_msg.set_result(rv);
-                                        //             }
-                                        //             Err(e) => {
-                                        //                 resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
-                                        //             }
-                                        //         }
-                                        //         match client.send(resp_msg).await {
-                                        //             Ok(_) => {
-                                        //                 debug!("Send response OK");
-                                        //             }
-                                        //             Err(e) => {
-                                        //                 warn!("Send response error: {}.", e);
-                                        //             }
-                                        //         }
-                                        //     }
-                                        //     Err(e) => {
-                                        //         warn!("Create response meta error: {}.", e);
-                                        //     }
-                                        // }
                                     }
                                 }
-                                Err(e) => {
-                                    warn!("Read message error: {}.", e);
-                                }
+                                Err(e) => { warn!("Read message error: {}.", e); }
                             }
                         }
                     }
-                    Err(e) => {
-                        info!("Login error: {}", e);
-                    }
+                    Err(e) => { info!("Login error: {}", e); }
                 };
             }
-            Err(e) => {
-                warn!("connect to broker error: {}", e);
-            }
+            Err(e) => { warn!("connect to broker error: {}", e); }
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
 
 type ShvAgentNodeData = ();
-type ShvAgentNode = MethodListShvNode<ShvAgentNodeData>;
+type ShvAgentNode = ShvTreeNode<ShvAgentNodeData>;
 fn create_shvagent_node(device_id: &str) -> ShvAgentNode {
     let mut ret = ShvAgentNode::new_device((), "ShvAgent", device_id);
     ret.add_method(
