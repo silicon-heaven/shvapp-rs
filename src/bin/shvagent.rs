@@ -119,7 +119,7 @@ async fn main() -> shvapp::Result<()> {
                                 Ok(msg) => {
                                     debug!("Message arrived: {}", msg);
                                     if msg.is_request() {
-                                        let sender = client.clone_sender();
+                                        let sender = client.as_sender();
                                         let ret_val = shv_tree.process_request(&sender,&msg).await;
                                         if let Ok(None) = ret_val {
                                             // ret val will be sent async in handler

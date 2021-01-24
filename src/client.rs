@@ -266,8 +266,8 @@ impl Client {
         tokio::time::timeout(timeout, self.receive()).await?
     }
 
-    pub fn clone_sender(& self) -> RpcMessageSender {
-        self.send_message_tx.clone()
+    pub fn as_sender(& self) -> &RpcMessageSender {
+        &self.send_message_tx
     }
 }
 
