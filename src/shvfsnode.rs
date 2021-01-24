@@ -1,11 +1,9 @@
-use crate::shvnode::{RequestProcessor, RequestProcessorRefType, ProcessRequestResult};
+use crate::shvnode::{RequestProcessor, ProcessRequestResult};
 use chainpack::metamethod::{MetaMethod, Signature};
 use chainpack::{RpcValue, metamethod, RpcMessage, RpcMessageMetaTags};
-use async_trait::async_trait;
 use std::path::{Path, PathBuf};
-use std::{io, fs};
-use tracing::{warn, info, debug};
-use crate::utils;
+use std::{fs};
+use tracing::{debug};
 use crate::client::RpcMessageSender;
 use chainpack::rpcvalue::List;
 
@@ -48,10 +46,10 @@ impl FSDirRequestProcessor {
     }
 }
 
-#[async_trait]
 impl RequestProcessor for FSDirRequestProcessor {
-    async fn process_request(&mut self, sender: &RpcMessageSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    fn process_request(&mut self, _sender: &RpcMessageSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
+        #[allow(non_snake_case)]
         if method == "dir" {
             //info!("DIR path: {} abs: {:?}", shv_path, self.make_absolute_path(shv_path));
             let DIR = MetaMethod { name: "dir".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() };
@@ -116,7 +114,7 @@ impl RequestProcessor for FSDirRequestProcessor {
         Err(format!("Unknown method '{}' on path '{}'", method, shv_path).into())
     }
 
-    async fn is_dir(&self) -> bool {
+    fn is_dir(&self) -> bool {
         return  true;
     }
 }

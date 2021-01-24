@@ -269,8 +269,8 @@ impl Drop for Db {
 }
 
 impl Shared {
-    /// Purge all expired keys and return the `Instant` at which the **next**
-    /// key will expire. The background task will sleep until this instant.
+    // Purge all expired keys and return the `Instant` at which the **next**
+    // key will expire. The background task will sleep until this instant.
     // fn purge_expired_keys(&self) -> Option<Instant> {
     //     let mut state = self.state.lock().unwrap();
     //
@@ -305,13 +305,13 @@ impl Shared {
     //     None
     // }
 
-    /// Returns `true` if the database is shutting down
-    ///
-    /// The `shutdown` flag is set when all `Db` values have dropped, indicating
-    /// that the shared state can no longer be accessed.
-    fn is_shutdown(&self) -> bool {
-        self.state.lock().unwrap().shutdown
-    }
+    // Returns `true` if the database is shutting down
+    //
+    // The `shutdown` flag is set when all `Db` values have dropped, indicating
+    // that the shared state can no longer be accessed.
+    // fn is_shutdown(&self) -> bool {
+    //     self.state.lock().unwrap().shutdown
+    // }
 }
 
 impl State {

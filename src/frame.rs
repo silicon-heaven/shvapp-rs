@@ -8,7 +8,7 @@ use std::string::FromUtf8Error;
 use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, RpcValue, MetaMap, ChainPackWriter, CponWriter, Writer, RpcMessageMetaTags};
 use crate::db::Db;
 use crate::Connection;
-use tracing::{instrument};
+// use tracing::{instrument};
 use bytes::Buf;
 
 /// A frame in the Redis protocol.
@@ -119,8 +119,8 @@ impl Frame {
     ///
     /// The response is written to `dst`. This is called by the server in order
     /// to execute a received command.
-    #[instrument(skip(self, db, dst))]
-    pub(crate) async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+    //#[instrument(skip(self, db, dst))]
+    pub(crate) async fn apply(self, _db: &Db, dst: &mut Connection) -> crate::Result<()> {
         // echo for now
         if self.meta.is_request() {
             let method = self.meta.method().ok_or("no method")?;
