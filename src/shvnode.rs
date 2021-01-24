@@ -1,7 +1,6 @@
 use chainpack::metamethod::{MetaMethod, LsAttribute};
 use chainpack::rpcvalue::List;
 use chainpack::{RpcValue, RpcMessage, RpcMessageMetaTags, metamethod};
-use tracing::debug;
 use async_trait::async_trait;
 use crate::utils;
 use std::future::Future;
@@ -9,6 +8,7 @@ use std::pin::Pin;
 use tokio::sync::Mutex;
 use std::sync::Arc;
 use crate::client::RpcMessageSender;
+use tracing::{warn, info, debug};
 
 pub type ProcessRequestResult = crate::Result<Option<RpcValue>>;
 pub struct NodesTree {
@@ -33,6 +33,7 @@ impl NodesTree {
     fn find_node<'a, 'b>(&'a self, path: &'b str) -> crate::Result<(&'a TreeNode, &'b str)> {
         fn find_node<'a, 'b>(pnd: &'a TreeNode, path: &'b str) -> (&'a TreeNode, &'b str) {
             let (dir, rest) = utils::shv_path_cut_first(path);
+            // info!("{} ---> {} + {}", path, dir, rest);
             if dir.is_empty() {
                 return (pnd, rest);
             }
@@ -46,7 +47,7 @@ impl NodesTree {
                 }
                 None => {}
             }
-            return (pnd, rest);
+            return (pnd, path);
         }
         let f = find_node(&self.root, path);
         return Ok(f);
@@ -85,10 +86,18 @@ impl TreeNode {
         }
         None
     }
-    fn is_dir(&self) -> bool {
-        self.children.is_some()
+    async fn is_dir(&self) -> bool {
+        if self.children.is_some() {
+            return true
+        }
+        if let Some(processor) = &self.processor {
+            let g = processor.lock().await;
+            return g.is_dir().await;
+        }
+        return false;
     }
     async fn process_request(&self, sender: &RpcMessageSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+        //info!("################### process_request path: {} {}", shv_path, request.to_cpon());
         if shv_path.is_empty() {
             // if whole shv path was used
             let method = request.method().ok_or("Method is empty")?;
@@ -97,7 +106,7 @@ impl TreeNode {
                     // if children exists
                     let mut lst = List::new();
                     for (name, nd) in children {
-                        let e: List = vec![name.into(), nd.is_dir().into()];
+                        let e: List = vec![name.into(), nd.is_dir().await.into()];
                         lst.push(e.into());
                     }
                     return Ok(Some(lst.into()));
@@ -123,9 +132,8 @@ impl TreeNode {
             }
         }
         if let Some(processor) = &self.processor {
-            //let processor2 = processor.clone();
-            let g = processor.lock().await;
-            return g.process_request(sender,processor, request, shv_path).await;
+            let mut g = processor.lock().await;
+            return g.process_request(sender, request, shv_path).await;
         }
         Err(format!("Cannot handle rpc request on path: {}", shv_path).into())
     }
@@ -133,7 +141,8 @@ impl TreeNode {
 
 #[async_trait]
 pub trait RequestProcessor: Send {
-    async fn process_request(&self, sender: &RpcMessageSender, self_arc: &RequestProcessorRefType, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
+    async fn process_request(&mut self, sender: &RpcMessageSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
+    async fn is_dir(&self) -> bool;
 }
 
 

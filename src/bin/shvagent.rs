@@ -16,6 +16,7 @@ use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, RequestProcessorRef
 use chainpack::rpcvalue::List;
 use tokio::sync::Mutex;
 use std::sync::Arc;
+use shvapp::shvfsnode::FSDirRequestProcessor;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
@@ -78,12 +79,18 @@ async fn main() -> shvapp::Result<()> {
         }))),
         children: None,
     };
-    root.add_child_node("node-a", TreeNode {
-        processor: None,
-        children: None,
+    let home_dir = dirs::home_dir();
+    if let Some(home_dir) = home_dir {
+        let home_dir = home_dir.to_str().ok_or(format!("Cannot convert '{:?}' to string", home_dir))?;
+        root.add_child_node("fs", TreeNode {
+            processor: Some(Arc::new(Mutex::new(FSDirRequestProcessor {
+                root: home_dir.into(),
+            }))),
+            children: None,
         }
-    );
-    let mut shv_tree = NodesTree::new(root);
+        );
+    }
+    let shv_tree = NodesTree::new(root);
     //let mut app_node = ShvAgentAppNode::new();
     //let dyn_app_node = (&mut app_node) as &dyn ShvNode;
     loop {
@@ -165,20 +172,6 @@ async fn main() -> shvapp::Result<()> {
     }
 }
 
-struct ShvAgentNode {
-    methods: Vec<MetaMethod>,
-}
-
-impl ShvAgentNode {
-    pub fn new() -> Self {
-        Self {
-            methods: vec![
-                MetaMethod { name: "runCmd".into(), signature: Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("cmd"), description: "params: [\"command\", [param1, ...], {\"envkey1\": \"envval1\"}, 1, 2], only the command is mandatory".into() }
-            ],
-        }
-    }
-}
-
 struct DeviceNodeRequestProcessor {
     app_name: String,
     device_id: String,
@@ -186,7 +179,7 @@ struct DeviceNodeRequestProcessor {
 
 #[async_trait]
 impl RequestProcessor for DeviceNodeRequestProcessor {
-    async fn process_request(&self, sender: &RpcMessageSender, self_arc: &RequestProcessorRefType, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    async fn process_request(&mut self, sender: &RpcMessageSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
         if shv_path.is_empty() {
             if method == "dir" {
@@ -211,7 +204,6 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
             }
             if method == "runCmd" {
                 let request = request.clone();
-                let processor = self_arc.clone();
                 let shv_path = shv_path.to_string();
                 let sender = sender.clone();
                 tokio::spawn(async move {
@@ -256,5 +248,9 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
             }
         }
         Err(format!("Unknown method '{}' on path '{}'", method, shv_path).into())
+    }
+
+    async fn is_dir(&self) -> bool {
+        return false;
     }
 }
