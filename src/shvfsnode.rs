@@ -1,11 +1,12 @@
 use crate::shvnode::{RequestProcessor, ProcessRequestResult};
 use chainpack::metamethod::{MetaMethod, Signature};
 use chainpack::{RpcValue, metamethod, RpcMessage, RpcMessageMetaTags};
-use std::path::{Path, PathBuf};
-use std::{fs};
-use tracing::{debug};
-use crate::client::RpcMessageSender;
 use chainpack::rpcvalue::List;
+use std::path::{Path, PathBuf};
+use sha1::{Sha1, Digest};
+use std::{fs};
+use log::{debug};
+use crate::client::RpcMessageTx;
 
 pub struct FSDirRequestProcessor {
     pub root: String,
@@ -19,12 +20,7 @@ impl FSDirRequestProcessor {
     fn make_absolute_path(&self, path: &str) -> PathBuf {
         Path::new(&self.root).join(path)
     }
-    // fn is_dir_empty(&self, path: &Path) -> bool {
-    //     match path.read_dir() {
-    //         Ok(mut it) => it.next().is_none(),
-    //         _ => true,
-    //     }
-    // }
+
     fn children2(&self, path: &str) -> crate::Result<Vec<(String, bool)>> {
         let mut pb = self.make_absolute_path(path);
         if pb.is_dir() {
@@ -47,7 +43,7 @@ impl FSDirRequestProcessor {
 }
 
 impl RequestProcessor for FSDirRequestProcessor {
-    fn process_request(&mut self, _sender: &RpcMessageSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    fn process_request(&mut self, _sender: &RpcMessageTx, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
         #[allow(non_snake_case)]
         if method == "dir" {
@@ -55,7 +51,8 @@ impl RequestProcessor for FSDirRequestProcessor {
             let DIR = MetaMethod { name: "dir".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() };
             let LS = MetaMethod { name: "ls".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() };
             let READ = MetaMethod { name: "size".into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("rd"), description: "Read file content".into() };
-            let SIZE = MetaMethod { name: "read".into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("rd"), description: "Read file content".into() };
+            let SIZE = MetaMethod { name: "read".into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("rd"), description: "Read file content".into() };
+            let HASH = MetaMethod { name: "hash".into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("rd"), description: "File content SHA1".into() };
             let CD = MetaMethod { name: "cd".into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("wr"), description: "Change root directory".into() };
             let PWD = MetaMethod { name: "pwd".into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("rd"), description: "Current root directory".into() };
             let mut lst = List::new();
@@ -71,6 +68,7 @@ impl RequestProcessor for FSDirRequestProcessor {
             } else {
                 lst.push(READ.to_rpcvalue(255));
                 lst.push(SIZE.to_rpcvalue(255));
+                lst.push(HASH.to_rpcvalue(255));
             }
             return Ok(Some(lst.into()));
         }
@@ -97,6 +95,14 @@ impl RequestProcessor for FSDirRequestProcessor {
         if method == "size" {
             let data = fs::metadata(self.make_absolute_path(shv_path))?.len();
             return Ok(Some(RpcValue::from(data)))
+        }
+        if method == "hash" {
+            let data = fs::read(self.make_absolute_path(shv_path))?;
+            let mut hasher = Sha1::new();
+            hasher.update(&data);
+            let result = hasher.finalize();
+            let hex_string = hex::encode(&result);
+            return Ok(Some(RpcValue::from(hex_string)))
         }
         if shv_path.is_empty() {
             if method == "cd" {

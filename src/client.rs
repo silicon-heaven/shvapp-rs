@@ -6,15 +6,15 @@
 use crate::{Connection};
 
 use tokio::net::{TcpStream};
-use tracing::{debug, info, warn, error};
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue};
 use crate::frame::Protocol;
 use std::time::Duration;
 use tokio::sync::{mpsc, broadcast};
+use log::{debug, info, warn, error};
 
 const DEFAULT_RPC_CALL_TIMEOUT_MS: u64 = 5000;
 
-pub type RpcMessageSender = mpsc::Sender<RpcMessage>;
+pub type RpcMessageTx = mpsc::Sender<RpcMessage>;
 
 #[derive(Copy, Clone)]
 pub enum PasswordType {
@@ -82,7 +82,7 @@ impl ConnectionParams {
 
 pub struct Client {
     //connection: Arc<ClientConnection>,
-    send_message_tx: RpcMessageSender,
+    send_message_tx: RpcMessageTx,
     recv_message_rx: broadcast::Receiver<RpcMessage>,
     // recv_message_rx cannot be cloned, we have to keep TX end to make TX.subscribe() happen
     // when cloning client
@@ -154,7 +154,7 @@ impl ClientConnection {
                     match resp {
                         Ok(resp) => {
                             // debug!(?maybe_resp);
-                            info!("message received: {}", resp);
+                            debug!(target: "rpcmsg", "R==> message received: {}", resp);
                             self.recv_response_tx.send(resp)?;
                         }
                         Err(e) => return Err(e.into()),
@@ -163,7 +163,7 @@ impl ClientConnection {
                 rq = self.send_request_rx.recv() => {
                     match rq {
                         Some(rq) => {
-                            info!("send request: {}", rq);
+                            debug!(target: "rpcmsg", "<==S send request: {}", rq);
                             self.connection.send_message(&rq).await?;
                         }
                         None => {
@@ -266,7 +266,7 @@ impl Client {
         tokio::time::timeout(timeout, self.receive()).await?
     }
 
-    pub fn as_sender(& self) -> &RpcMessageSender {
+    pub fn as_sender(& self) -> &RpcMessageTx {
         &self.send_message_tx
     }
 }

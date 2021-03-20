@@ -4,7 +4,8 @@ use std::io::{Cursor};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 use chainpack::{RpcMessage, ChainPackWriter, Writer, CponWriter, RpcValue, RpcMessageMetaTags};
-use tracing::{debug};
+// use tracing::{debug};
+use log::{debug};
 use std::time::Duration;
 use chainpack::rpcmessage::RqId;
 

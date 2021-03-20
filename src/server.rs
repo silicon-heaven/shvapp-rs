@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time::{self, Duration};
-use tracing::{debug, error, info, warn, instrument};
+use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicI64, Ordering};
 use chainpack::{RpcMessageMetaTags, RpcValue};
 use rand::Rng;
@@ -170,7 +170,7 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> crate::Result<
             // Errors encountered when handling individual connections do not
             // bubble up to this point.
             if let Err(err) = res {
-                error!(cause = %err, "failed to accept");
+                error!("failed to accept: {}", err);
             }
         }
         _ = shutdown => {
@@ -275,7 +275,7 @@ impl Listener {
                     }
                     Err(err) => {
                         error!("Client id: {} connection error: {}", handler.client_id, err);
-                        error!(cause = ?err, "connection error");
+                        error!("connection error: {}", err);
                     }
                 }
             });
@@ -328,7 +328,7 @@ impl Handler {
     ///
     /// When the shutdown signal is received, the connection is processed until
     /// it reaches a safe state, at which point it is terminated.
-    #[instrument(skip(self))]
+    //#[instrument(skip(self))]
     async fn run(&mut self) -> crate::Result<()> {
         // As long as the shutdown signal has not been received, try to read a
         // new request frame.

@@ -2,11 +2,9 @@ use shvapp::{client, DEFAULT_PORT};
 
 use std::time::Duration;
 use structopt::StructOpt;
-use tracing::{warn, info, debug};
-use std::env;
-use shvapp::client::{ConnectionParams, RpcMessageSender};
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::util::SubscriberInitExt;
+use std::{env, io};
+use shvapp::client::{ConnectionParams, RpcMessageTx};
+
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue, metamethod};
 use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::metamethod::{MetaMethod};
@@ -15,8 +13,87 @@ use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, ProcessRequestResul
 use chainpack::rpcvalue::List;
 use shvapp::shvfsnode::FSDirRequestProcessor;
 
+// use tracing_subscriber::fmt::format;
+// use tracing_subscriber::field::MakeExt;
+// use tracing_subscriber::EnvFilter;
+// use tracing_subscriber::util::SubscriberInitExt;
+use log::{warn, info, debug, LevelFilter};
+
+use fern::colors::ColoredLevelConfig;
+use colored::Color;
+use colored::Colorize;
+
+fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFilter)>, fern::InitError> {
+    let mut ret: Vec<(String, log::LevelFilter)> = Vec::new();
+    let colors = ColoredLevelConfig::new()
+        // use builder methods
+        .error(Color::BrightRed)
+        .warn(Color::BrightMagenta)
+        .info(Color::Cyan)
+        .debug(Color::White)
+        .trace(Color::BrightBlack);
+
+    let mut base_config = fern::Dispatch::new();
+    base_config = match verbosity {
+        None => {
+            ret.push(("".into(), log::LevelFilter::Info));
+            base_config
+                .level(log::LevelFilter::Info)
+        }
+        Some(levels) => {
+            let mut default_level_set = false;
+            for level_str in levels.split(',') {
+                let parts: Vec<&str> = level_str.split(':').collect();
+                let (target, level_abbr) = if parts.len() == 1 {
+                    (parts[0], "T")
+                } else if parts.len() == 2 {
+                    (parts[0], parts[1])
+                } else {
+                    panic!("Cannot happen");
+                };
+                let level = match level_abbr {
+                    "D" => log::LevelFilter::Debug,
+                    "I" => log::LevelFilter::Info,
+                    "W" => log::LevelFilter::Warn,
+                    "E" => log::LevelFilter::Error,
+                    _ => log::LevelFilter::Trace,
+                };
+                ret.push((target.to_string(), level));
+                if target.is_empty() {
+                    base_config = base_config.level(level);
+                    default_level_set = true;
+                } else {
+                    base_config = base_config.level_for(target.to_string(), level);
+                }
+            }
+            if !default_level_set {
+                base_config = base_config.level(LevelFilter::Info);
+            }
+            base_config
+        }
+    };
+    let stderr_config = fern::Dispatch::new()
+        .format(move |out, message, record| {
+            let level_color: fern::colors::Color = colors.get_color(&record.level());
+            out.finish(format_args!(
+                "{}{}{} module: {} {}",
+                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S.%3f").to_string().green(),
+                format!("({}:{})", record.target(), record.line().unwrap_or(0)).yellow(),
+                format!("[{}]", &record.level().as_str()[..1]).color(level_color),
+                record.module_path().unwrap_or(""),
+                format!("{}", message).color(level_color)
+            ))
+        })
+        .chain(io::stderr());
+    base_config
+        //.chain(file_config)
+        .chain(stderr_config)
+        .apply()?;
+    Ok(ret)
+}
+
 #[derive(StructOpt, Debug)]
-#[structopt(name = "shvagent-cli", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
+#[structopt(name = "shvagent", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
 struct Cli {
     #[structopt(name = "hostname", short = "-s", long = "--host", default_value = "127.0.0.1")]
     host: String,
@@ -30,8 +107,8 @@ struct Cli {
     device_id: Option<String>,
     #[structopt(short = "-m", long = "--mount-point")]
     mount_point: Option<String>,
-    #[structopt(short = "-V", long = "--verbose", help = "Verbose log")]
-    verbose: bool,
+    #[structopt(short = "-v", long = "--verbose", help = "Verbosity levels for targets, for example: rpcmsg:W or :T")]
+    verbosity: Option<String>,
 }
 
 // const DEFAULT_RPC_TIMEOUT_MSEC: u64 = 5000;
@@ -50,17 +127,13 @@ async fn main() -> shvapp::Result<()> {
     // Parse command line arguments
     let cli = Cli::from_args();
 
-    // Enable logging
-    if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "info")
-    }
-    let sb = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env());
-    if cli.verbose == true {
-        sb.pretty().finish().try_init()?;
-    } else {
-        sb.finish().try_init()?;
-    }
+    let levels = setup_logging(&cli.verbosity).expect("failed to initialize logging.");
+    log::info!("=====================================================");
+    log::info!("{} starting up!", std::module_path!());
+    log::info!("=====================================================");
+    log::info!("Verbosity levels: {}", levels.iter()
+        .map(|(target, level)| format!("{}:{}", target, level))
+        .fold(String::new(), |acc, s| if acc.is_empty() { s } else { acc + "," + &s }));
 
     let device_id = cli.device_id.unwrap_or("".into());
     // Get the remote address to connect to
@@ -108,6 +181,7 @@ async fn main() -> shvapp::Result<()> {
                 });
                 match client.login(&connection_params).await {
                     Ok(_) => {
+                        /*
                         let ping_fut = client.call(RpcMessage::create_request(".broker/app", "ping", None));
                         match ping_fut.await {
                             Ok(resp) => {
@@ -117,7 +191,7 @@ async fn main() -> shvapp::Result<()> {
                                 info!("Ping error: {}", e);
                             }
                         }
-                        //let mut timeout_cnt = 0;
+                        */
                         loop {
                             match client.receive().await {
                                 Ok(msg) => {
@@ -175,7 +249,7 @@ struct DeviceNodeRequestProcessor {
 }
 
 impl RequestProcessor for DeviceNodeRequestProcessor {
-    fn process_request(&mut self, sender: &RpcMessageSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    fn process_request(&mut self, sender: &RpcMessageTx, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
         if shv_path.is_empty() {
             if method == "dir" {
