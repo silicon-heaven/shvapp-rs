@@ -23,6 +23,29 @@ use fern::colors::ColoredLevelConfig;
 use colored::Color;
 use colored::Colorize;
 
+#[derive(StructOpt, Debug)]
+#[structopt(name = "shvagent", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
+struct Cli {
+    #[structopt(name = "hostname", short = "-s", long = "--host", default_value = "127.0.0.1")]
+    host: String,
+    #[structopt(short = "-p", long = "--port", default_value = DEFAULT_PORT)]
+    port: u16,
+    #[structopt(short = "-u", long = "--user")]
+    user: String,
+    #[structopt(long = "--password")]
+    password: String,
+    #[structopt(long = "--device-id")]
+    device_id: Option<String>,
+    #[structopt(short = "-m", long = "--mount-point")]
+    mount_point: Option<String>,
+    #[structopt(short = "-v", long = "--verbose", help = "Verbosity levels for targets, for example: rpcmsg:W or :T")]
+    verbosity: Option<String>,
+    #[structopt(short = "-e", long = "--export-dir", help = "Directory, which will be exported as 'fs' subnode")]
+    export_dir: Option<String>,
+}
+
+// const DEFAULT_RPC_TIMEOUT_MSEC: u64 = 5000;
+
 fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFilter)>, fern::InitError> {
     let mut ret: Vec<(String, log::LevelFilter)> = Vec::new();
     let colors = ColoredLevelConfig::new()
@@ -75,12 +98,13 @@ fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFi
     let stderr_config = fern::Dispatch::new()
         .format(move |out, message, record| {
             let level_color: fern::colors::Color = colors.get_color(&record.level());
+            let target = if record.module_path().unwrap_or("") == record.target() { "".to_string() } else { format!("({})", record.target().bright_white()) };
             out.finish(format_args!(
-                "{}{}{} module: {} {}",
+                "{}{}{}{} {}",
                 chrono::Local::now().format("%Y-%m-%dT%H:%M:%S.%3f").to_string().green(),
-                format!("({}:{})", record.target(), record.line().unwrap_or(0)).yellow(),
+                format!("[{}:{}]", record.module_path().unwrap_or(""), record.line().unwrap_or(0)).yellow(),
+                &target,
                 format!("[{}]", &record.level().as_str()[..1]).color(level_color),
-                record.module_path().unwrap_or(""),
                 format!("{}", message).color(level_color)
             ))
         })
@@ -91,27 +115,6 @@ fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFi
         .apply()?;
     Ok(ret)
 }
-
-#[derive(StructOpt, Debug)]
-#[structopt(name = "shvagent", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
-struct Cli {
-    #[structopt(name = "hostname", short = "-s", long = "--host", default_value = "127.0.0.1")]
-    host: String,
-    #[structopt(short = "-p", long = "--port", default_value = DEFAULT_PORT)]
-    port: u16,
-    #[structopt(short = "-u", long = "--user")]
-    user: String,
-    #[structopt(long = "--password")]
-    password: String,
-    #[structopt(long = "--device-id")]
-    device_id: Option<String>,
-    #[structopt(short = "-m", long = "--mount-point")]
-    mount_point: Option<String>,
-    #[structopt(short = "-v", long = "--verbose", help = "Verbosity levels for targets, for example: rpcmsg:W or :T")]
-    verbosity: Option<String>,
-}
-
-// const DEFAULT_RPC_TIMEOUT_MSEC: u64 = 5000;
 
 /// Entry point for CLI tool.
 ///
@@ -149,12 +152,11 @@ async fn main() -> shvapp::Result<()> {
         })),
         children: None,
     };
-    let home_dir = dirs::home_dir();
-    if let Some(home_dir) = home_dir {
-        let home_dir = home_dir.to_str().ok_or(format!("Cannot convert '{:?}' to string", home_dir))?;
+    //let exported_dir = dirs::home_dir();
+    if let Some(export_dir) = cli.export_dir {
         root.add_child_node("fs", TreeNode {
             processor: Some(Box::new(FSDirRequestProcessor {
-                root: home_dir.into(),
+                root: export_dir.into(),
             })),
             children: None,
         }

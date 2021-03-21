@@ -24,6 +24,9 @@ rand = "0.7.3"
 dirs = "3.0.1"
 sha-1 = "0.9.4"
 hex = "0.4.2"
+#lz4_flex = "0.7.5"
+#lz4-compress = "0.1.1"
+lz-fear = "0.1.1"
 
 chainpack = { path = "../chainpack" }
 
