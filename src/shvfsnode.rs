@@ -126,7 +126,7 @@ impl RequestProcessor for FSDirRequestProcessor {
         }
         if shv_path.is_empty() {
             if method == M_CD {
-                let dir = request.params().ok_or("illegal params")?.as_str()?;
+                let dir = request.params().ok_or("illegal params")?.as_str();
                 if !self.make_absolute_path(dir).is_dir() {
                     return Err(format!("Path '{}' is not dir.", dir).into())
                 }

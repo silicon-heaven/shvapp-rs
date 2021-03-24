@@ -1,10 +1,10 @@
 use structopt::StructOpt;
 use tokio::signal;
 use shvapp::{server, DEFAULT_PORT};
-use tracing::{info};
+use log::{info};
 use std::env;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::util::SubscriberInitExt;
+// use tracing_subscriber::EnvFilter;
+// use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main]
 pub async fn main() -> shvapp::Result<()> {
@@ -14,13 +14,13 @@ pub async fn main() -> shvapp::Result<()> {
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info")
     }
-    let sb = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env());
-    if cli.verbose == true {
-        sb.pretty().finish().try_init()?;
-    } else {
-        sb.finish().try_init()?;
-    }
+    // let sb = tracing_subscriber::fmt()
+    //     .with_env_filter(EnvFilter::from_default_env());
+    // if cli.verbose == true {
+    //     sb.pretty().finish().try_init()?;
+    // } else {
+    //     sb.finish().try_init()?;
+    // }
 
     let port = cli.port;
     info!("Starting SHV Broker, listenning on port: {}", port);

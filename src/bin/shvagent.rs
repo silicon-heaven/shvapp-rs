@@ -95,7 +95,8 @@ fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFi
             base_config
         }
     };
-    let stderr_config = fern::Dispatch::new()
+    base_config
+        //.chain(file_config)
         .format(move |out, message, record| {
             let level_color: fern::colors::Color = colors.get_color(&record.level());
             let target = if record.module_path().unwrap_or("") == record.target() { "".to_string() } else { format!("({})", record.target().bright_white()) };
@@ -108,10 +109,7 @@ fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFi
                 format!("{}", message).color(level_color)
             ))
         })
-        .chain(io::stderr());
-    base_config
-        //.chain(file_config)
-        .chain(stderr_config)
+        .chain(io::stderr())
         .apply()?;
     Ok(ret)
 }
@@ -286,10 +284,10 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
                             if params.is_empty() {
                                 return Err("Param list is empty".into());
                             }
-                            params[0].as_str()?
+                            params[0].as_str()
                         }
-                        else if params.is_data() {
-                            params.as_str()?
+                        else if params.is_string() {
+                            params.as_str()
                         }
                         else {
                             return Err("Invalid params".into());

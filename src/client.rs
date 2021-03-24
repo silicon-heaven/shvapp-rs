@@ -195,7 +195,7 @@ impl Client {
         if login_params.password.len() != 40 {
             if let Some(result) = hello_resp.result() {
                 if let Some(nonce) = result.as_map().get("nonce") {
-                    let hash = crate::utils::sha1_password_hash(login_params.password.as_bytes(), nonce.as_data());
+                    let hash = crate::utils::sha1_password_hash(login_params.password.as_str().as_bytes(), nonce.as_str().as_bytes());
                     login_params.password = hash;
                     login_params.password_type = PasswordType::SHA1;
                 } else {
