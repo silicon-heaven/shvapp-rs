@@ -5,8 +5,7 @@ use std::fmt;
 use std::io::{Cursor, BufReader};
 use std::num::TryFromIntError;
 use std::string::FromUtf8Error;
-use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, RpcValue, MetaMap, ChainPackWriter, CponWriter, Writer, RpcMessageMetaTags};
-use crate::Connection;
+use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, MetaMap, ChainPackWriter, CponWriter, Writer};
 // use tracing::{instrument};
 use bytes::Buf;
 

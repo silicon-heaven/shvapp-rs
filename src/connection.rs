@@ -2,42 +2,37 @@ use crate::frame::{self, Frame, Protocol};
 use crate::client::{Client};
 use bytes::{Buf, BytesMut};
 use std::io::{Cursor};
-use std::sync::mpsc::channel;
-use chainpack::{RpcMessage, ChainPackWriter, Writer, CponWriter, RpcValue, RpcMessageMetaTags};
+use chainpack::{RpcMessage, ChainPackWriter, Writer, CponWriter};
 use log::{debug, error};
-use std::time::Duration;
-use chainpack::rpcmessage::RqId;
 use async_std::{
     channel::{Receiver, Sender},
-    io::{stdin, BufReader, BufWriter},
-    net::{TcpStream, ToSocketAddrs},
+    // io::{stdin, BufReader, BufWriter},
+    net::{TcpStream},
     prelude::*,
-    task,
+    // task,
 };
 use futures::{select, FutureExt};
 
 
 #[derive(Debug)]
-pub struct Connection<'a> {
-    stream_reader: BufReader<&'a TcpStream>,
-    stream_writer: BufWriter<&'a TcpStream>,
+pub struct Connection {
+    stream: TcpStream,
     // The buffer for reading frames.
     buffer: BytesMut,
     from_client: (Sender<Frame>, Receiver<Frame>),
     to_client: (Sender<Frame>, Receiver<Frame>),
 }
 
-impl<'a> Connection<'a> {
-    pub fn new(stream: &'a TcpStream) -> Connection<'a> {
+impl Connection {
+    pub fn new(stream: TcpStream) -> Connection {
         Connection {
-            stream_reader: BufReader::new(stream),
-            stream_writer: BufWriter::new(stream),
+            stream,
             buffer: BytesMut::with_capacity(4 * 1024),
             from_client: async_std::channel::bounded(256),
             to_client: async_std::channel::bounded(256),
         }
     }
-    pub fn newClient(&self, protocol: Protocol) -> Client {
+    pub fn create_client(&self, protocol: Protocol) -> Client {
         Client {
             sender: self.from_client.0.clone(),
             receiver: self.to_client.1.clone(),
@@ -48,7 +43,7 @@ impl<'a> Connection<'a> {
         loop {
             let mut buf: [u8; 1024] = [0; 1024];
             select! {
-                n = self.stream_reader.read(&mut buf).fuse() => match n {
+                n = self.stream.read(&mut buf).fuse() => match n {
                     Ok(n) => {
                         debug!("{} bytes read", n);
                         self.buffer.extend_from_slice(&buf[..n]);
@@ -56,7 +51,7 @@ impl<'a> Connection<'a> {
                             Ok(frame) => match frame {
                                 Some(frame) => {
                                     debug!("New frame from socket received");
-                                    self.to_client.0.send(frame);
+                                    self.to_client.0.send(frame).await?;
                                 }
                                 None => {
                                     // not all frame data received
@@ -197,13 +192,13 @@ impl<'a> Connection<'a> {
         let msg_len = 1 + meta_data.len() + frame.data.len();
         wr.write_uint_data(msg_len as u64)?;
         header.push(frame.protocol as u8);
-        self.stream_writer.write_all(&header).await?;
-        self.stream_writer.write_all(&meta_data).await?;
-        self.stream_writer.write_all(&frame.data).await?;
+        self.stream.write(&header).await?;
+        self.stream.write(&meta_data).await?;
+        self.stream.write(&frame.data).await?;
         // Ensure the encoded frame is written to the socket. The calls above
         // are to the buffered stream and writes. Calling `flush` writes the
         // remaining contents of the buffer to the socket.
-        self.stream_writer.flush().await?;
+        self.stream.flush().await?;
         Ok(())
     }
 }

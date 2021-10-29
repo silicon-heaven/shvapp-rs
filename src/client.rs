@@ -3,16 +3,16 @@
 //! Provides an async connect and methods for issuing the supported commands.
 
 // use crate::cmd::{Get, Publish, Set, Subscribe, Unsubscribe};
-use crate::{Connection, Frame};
+use crate::{Frame};
 
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue};
 use crate::frame::Protocol;
 use std::time::Duration;
 use async_std::{
     channel::{Receiver, Sender},
-    io::{stdin, BufReader, BufWriter},
-    net::{TcpStream, ToSocketAddrs},
-    prelude::*,
+    // io::{stdin, BufReader, BufWriter},
+    // net::{TcpStream, ToSocketAddrs},
+    //prelude::*,
     task,
     future,
 };

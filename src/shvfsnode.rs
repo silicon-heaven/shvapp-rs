@@ -44,7 +44,7 @@ impl FSDirRequestProcessor {
 }
 
 impl RequestProcessor for FSDirRequestProcessor {
-    fn process_request(&mut self, client: &Client, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    fn process_request(&mut self, _client: &Client, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
         const M_DIR: &str = "dir";
         const M_LS: &str = "ls";

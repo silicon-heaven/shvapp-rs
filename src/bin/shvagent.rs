@@ -1,14 +1,13 @@
-use shvapp::{client, Connection, DEFAULT_PORT};
-
-use std::time::Duration;
 use structopt::StructOpt;
 use std::{env, io};
+use std::time::Duration;
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue, metamethod};
 
 use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::rpcvalue::List;
 use chainpack::metamethod::{MetaMethod};
 
+use shvapp::{Connection, DEFAULT_PORT};
 use shvapp::client::{Client, ConnectionParams};
 use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, ProcessRequestResult};
 use shvapp::shvfsnode::FSDirRequestProcessor;
@@ -23,7 +22,7 @@ use async_std::{
     process::Command,
     // channel::{Receiver, Sender},
     // io::{stdin, BufReader, BufWriter},
-    net::{TcpStream, ToSocketAddrs},
+    net::{TcpStream},
     // prelude::*,
     task,
     // future,
@@ -169,10 +168,9 @@ async fn try_main() -> shvapp::Result<()> {
         info!("connecting to: {}", addr);
         let stream = TcpStream::connect(&addr).await?;
         info!("connected to: {}", addr);
-        let mut connection = Connection::new(&stream);
-        let mut client = connection.newClient(connection_params.protocol);
+        let mut connection = Connection::new(stream);
+        let mut client = connection.create_client(connection_params.protocol);
         task::spawn(async move {
-            info!("stream {:?}", stream.ttl());
             info!("Spawning connection message loop");
             match connection.exec().await {
                 Ok(_) => {
@@ -235,8 +233,10 @@ async fn try_main() -> shvapp::Result<()> {
             }
             Err(e) => {
                 info!("Login error: {}", e);
+                task::sleep(Duration::from_secs(5)).await;
             }
-        };    }
+        };
+    }
 }
 
 struct DeviceNodeRequestProcessor {
