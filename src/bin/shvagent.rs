@@ -1,27 +1,33 @@
-use shvapp::{client, DEFAULT_PORT};
+use shvapp::{client, Connection, DEFAULT_PORT};
 
 use std::time::Duration;
 use structopt::StructOpt;
 use std::{env, io};
-use shvapp::client::{ConnectionParams, RpcMessageTx};
-
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue, metamethod};
+
 use chainpack::rpcmessage::{RpcError, RpcErrorCode};
-use chainpack::metamethod::{MetaMethod};
-use tokio::process::Command;
-use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, ProcessRequestResult};
 use chainpack::rpcvalue::List;
+use chainpack::metamethod::{MetaMethod};
+
+use shvapp::client::{Client, ConnectionParams};
+use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, ProcessRequestResult};
 use shvapp::shvfsnode::FSDirRequestProcessor;
 
-// use tracing_subscriber::fmt::format;
-// use tracing_subscriber::field::MakeExt;
-// use tracing_subscriber::EnvFilter;
-// use tracing_subscriber::util::SubscriberInitExt;
 use log::{warn, info, debug, LevelFilter};
 
 use fern::colors::ColoredLevelConfig;
 use colored::Color;
 use colored::Colorize;
+
+use async_std::{
+    process::Command,
+    // channel::{Receiver, Sender},
+    // io::{stdin, BufReader, BufWriter},
+    net::{TcpStream, ToSocketAddrs},
+    // prelude::*,
+    task,
+    // future,
+};
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
@@ -114,17 +120,11 @@ fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFi
     Ok(ret)
 }
 
-/// Entry point for CLI tool.
-///
-/// The `[tokio::main]` annotation signals that the Tokio runtime should be
-/// started when the function is called. The body of the function is executed
-/// within the newly spawned runtime.
-///
-/// `flavor = "current_thread"` is used here to avoid spawning background
-/// threads. The CLI tool use case benefits more by being lighter instead of
-/// multi-threaded.
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> shvapp::Result<()> {
+pub(crate) fn main() -> shvapp::Result<()> {
+    task::block_on(try_main())
+}
+
+async fn try_main() -> shvapp::Result<()> {
     // Parse command line arguments
     let cli = Cli::from_args();
 
@@ -165,82 +165,78 @@ async fn main() -> shvapp::Result<()> {
     //let dyn_app_node = (&mut app_node) as &dyn ShvNode;
     loop {
         // Establish a connection
-        let connect_res = client::connect(&connection_params).await;
-        match connect_res {
-            Ok((mut client, mut connection)) => {
-                tokio::spawn(async move {
-                    info!("Spawning connection message loop");
-                    match connection.exec().await {
-                        Ok(_) => {
-                            info!("Connection message loop finished Ok");
-                        }
-                        Err(e) => {
-                            warn!("Connection message loop finished with error: {}", e);
-                        }
+        let addr = format!("{}:{}", connection_params.host, connection_params.port);
+        info!("connecting to: {}", addr);
+        let stream = TcpStream::connect(&addr).await?;
+        info!("connected to: {}", addr);
+        let mut connection = Connection::new(&stream);
+        let mut client = connection.newClient(connection_params.protocol);
+        task::spawn(async move {
+            info!("stream {:?}", stream.ttl());
+            info!("Spawning connection message loop");
+            match connection.exec().await {
+                Ok(_) => {
+                    info!("Connection message loop finished Ok");
+                }
+                Err(e) => {
+                    warn!("Connection message loop finished with error: {}", e);
+                }
+            }
+        });
+        match client.login(&connection_params).await {
+            Ok(_) => {
+                /*
+                let ping_fut = client.call(RpcMessage::create_request(".broker/app", "ping", None));
+                match ping_fut.await {
+                    Ok(resp) => {
+                        info!("Ping response: {}", resp);
                     }
-                });
-                match client.login(&connection_params).await {
-                    Ok(_) => {
-                        /*
-                        let ping_fut = client.call(RpcMessage::create_request(".broker/app", "ping", None));
-                        match ping_fut.await {
-                            Ok(resp) => {
-                                info!("Ping response: {}", resp);
-                            }
-                            Err(e) => {
-                                info!("Ping error: {}", e);
-                            }
-                        }
-                        */
-                        loop {
-                            match client.receive().await {
-                                Ok(msg) => {
-                                    debug!("Message arrived: {}", msg);
-                                    if msg.is_request() {
-                                        let sender = client.as_sender();
-                                        let ret_val = shv_tree.process_request(&sender,&msg);
-                                        if let Ok(None) = ret_val {
-                                            // ret val will be sent async in handler
-                                        }
-                                        else {
-                                            match msg.prepare_response() {
-                                                Ok(mut resp_msg) => {
-                                                    match ret_val {
-                                                        Ok(None) => {}
-                                                        Ok(Some(rv)) => {
-                                                            resp_msg.set_result(rv);
-                                                            client.send(resp_msg).await?;
-                                                        }
-                                                        Err(e) => {
-                                                            resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
-                                                            client.send(resp_msg).await?;
-                                                        }
-                                                    }
+                    Err(e) => {
+                        info!("Ping error: {}", e);
+                    }
+                }
+                */
+                loop {
+                    match client.receive_message().await {
+                        Ok(msg) => {
+                            debug!("Message arrived: {}", msg);
+                            if msg.is_request() {
+                                let ret_val = shv_tree.process_request(&client,&msg);
+                                if let Ok(None) = ret_val {
+                                    // ret val will be sent async in handler
+                                }
+                                else {
+                                    match msg.prepare_response() {
+                                        Ok(mut resp_msg) => {
+                                            match ret_val {
+                                                Ok(None) => {}
+                                                Ok(Some(rv)) => {
+                                                    resp_msg.set_result(rv);
+                                                    client.send_message(&resp_msg).await?;
                                                 }
                                                 Err(e) => {
-                                                    warn!("Create response meta error: {}.", e);
+                                                    resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
+                                                    client.send_message(&resp_msg).await?;
                                                 }
                                             }
                                         }
+                                        Err(e) => {
+                                            warn!("Create response meta error: {}.", e);
+                                        }
                                     }
-                                }
-                                Err(e) => {
-                                    warn!("Read message error: {}.", e);
                                 }
                             }
                         }
+                        Err(e) => {
+                            warn!("Read message error: {}.", e);
+                        }
                     }
-                    Err(e) => {
-                        info!("Login error: {}", e);
-                    }
-                };
+                }
             }
             Err(e) => {
-                warn!("connect to broker error: {}", e);
+                info!("Login error: {}", e);
             }
-        }
-        tokio::time::sleep(Duration::from_secs(3)).await;
-    }
+        };    }
 }
 
 struct DeviceNodeRequestProcessor {
@@ -249,7 +245,7 @@ struct DeviceNodeRequestProcessor {
 }
 
 impl RequestProcessor for DeviceNodeRequestProcessor {
-    fn process_request(&mut self, sender: &RpcMessageTx, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    fn process_request(&mut self, client: &Client, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
         if shv_path.is_empty() {
             if method == "dir" {
@@ -275,8 +271,8 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
             if method == "runCmd" {
                 let request = request.clone();
                 // let shv_path = shv_path.to_string();
-                let sender = sender.clone();
-                tokio::spawn(async move {
+                let client = client.clone();
+                task::spawn(async move {
                     async fn run_cmd(request: &RpcMessage) -> shvapp::Result<RpcValue> {
                         let params = request.params().ok_or("No params")?;
                         let cmd = if params.is_list() {
@@ -304,7 +300,7 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
                                 Ok(rv) => { resp_msg.set_result(rv); }
                                 Err(e) => { resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string())); }
                             }
-                            match sender.send(resp_msg).await {
+                            match client.send_message(&resp_msg).await {
                                 Ok(_) => {}
                                 Err(e) => { warn!("Send response error: {}.", e); }
                             }

@@ -2,8 +2,8 @@ use chainpack::metamethod::{MetaMethod};
 use chainpack::rpcvalue::List;
 use chainpack::{RpcValue, RpcMessage, RpcMessageMetaTags, metamethod};
 use crate::utils;
-use crate::client::RpcMessageTx;
 use log::{debug};
+use crate::client::Client;
 
 pub type ProcessRequestResult = crate::Result<Option<RpcValue>>;
 pub struct NodesTree {
@@ -15,14 +15,14 @@ impl NodesTree {
             root
         }
     }
-    pub fn process_request(&mut self, sender: &RpcMessageTx, request: &RpcMessage) -> ProcessRequestResult  {
+    pub fn process_request(&mut self, client: &Client, request: &RpcMessage) -> ProcessRequestResult  {
         if !request.is_request() {
             return Err("Not request".into());
         }
         debug!("request: {}", request);
         let shv_path = request.shv_path().unwrap_or("");
         //let (nd, path_rest) = self.find_node(shv_path)?;
-        self.root.process_request(sender,request, shv_path)
+        self.root.process_request(client,request, shv_path)
     }
 
     // fn find_node<'a, 'b>(&'a mut self, path: &'b str) -> crate::Result<(&'a mut TreeNode, &'b str)> {
@@ -92,7 +92,7 @@ impl TreeNode {
         }
         return false;
     }
-    fn process_request(&mut self, sender: &RpcMessageTx, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    fn process_request(&mut self, client: &Client, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         //info!("################### process_request path: {} {}", shv_path, request.to_cpon());
         if shv_path.is_empty() {
             // if whole shv path was used
@@ -133,21 +133,21 @@ impl TreeNode {
             Some(chd) => {
                 for (name, nd) in chd.iter_mut() {
                     if name == dir {
-                        return nd.process_request(sender, request, rest);
+                        return nd.process_request(client, request, rest);
                     }
                 }
             }
             None => {}
         }
         if let Some(processor) = &mut self.processor {
-            return processor.process_request(sender, request, shv_path);
+            return processor.process_request(client, request, shv_path);
         }
         Err(format!("Cannot handle rpc request on path: {}", shv_path).into())
     }
 }
 
 pub trait RequestProcessor: Send {
-    fn process_request(&mut self, sender: &RpcMessageTx, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
+    fn process_request(&mut self, client: &Client, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
     fn is_dir(&self) -> bool;
 }
 

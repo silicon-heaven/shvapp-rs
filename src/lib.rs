@@ -6,23 +6,9 @@ pub use frame::Frame;
 
 pub mod client;
 
-mod db;
-use db::Db;
-
-// mod parse;
-// use parse::{Parse, ParseError};
-
-pub mod server;
-
-// mod buffer;
-// pub use buffer::{buffer, Buffer};
-
 pub mod utils;
 pub mod shvnode;
 pub mod shvfsnode;
-
-mod shutdown;
-use shutdown::Shutdown;
 
 /// Default port that a redis server listens on.
 ///

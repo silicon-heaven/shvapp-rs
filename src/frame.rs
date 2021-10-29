@@ -6,7 +6,6 @@ use std::io::{Cursor, BufReader};
 use std::num::TryFromIntError;
 use std::string::FromUtf8Error;
 use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, RpcValue, MetaMap, ChainPackWriter, CponWriter, Writer, RpcMessageMetaTags};
-use crate::db::Db;
 use crate::Connection;
 // use tracing::{instrument};
 use bytes::Buf;
@@ -115,12 +114,13 @@ impl Frame {
         let data: Vec<u8> = buff.get_ref()[pos .. frame_len].into();
         return Ok(Frame{protocol, meta, data})
     }
+    /*
     /// Apply the `Frame` command to the specified `Db` instance.
     ///
     /// The response is written to `dst`. This is called by the server in order
     /// to execute a received command.
     //#[instrument(skip(self, db, dst))]
-    pub(crate) async fn apply(self, _db: &Db, dst: &mut Connection) -> crate::Result<()> {
+    pub(crate) async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
         // echo for now
         if self.meta.is_request() {
             let method = self.meta.method().ok_or("no method")?;
@@ -149,6 +149,7 @@ impl Frame {
             Err(format!("apply frame not implemented: {}", self).into())
         }
     }
+    */
     // Converts the frame to an "unexpected frame" error
     // pub(crate) fn to_error(&self) -> crate::Error {
     //     format!("unexpected frame: {}", self).into()

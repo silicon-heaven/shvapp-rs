@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use sha1::{Sha1, Digest};
 use std::{fs};
 use log::{debug};
-use crate::client::RpcMessageTx;
+use crate::client::Client;
 
 pub struct FSDirRequestProcessor {
     pub root: String,
@@ -44,7 +44,7 @@ impl FSDirRequestProcessor {
 }
 
 impl RequestProcessor for FSDirRequestProcessor {
-    fn process_request(&mut self, _sender: &RpcMessageTx, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    fn process_request(&mut self, client: &Client, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
         const M_DIR: &str = "dir";
         const M_LS: &str = "ls";

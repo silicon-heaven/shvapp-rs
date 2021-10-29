@@ -1,64 +1,88 @@
 use crate::frame::{self, Frame, Protocol};
+use crate::client::{Client};
 use bytes::{Buf, BytesMut};
 use std::io::{Cursor};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
-use tokio::net::TcpStream;
+use std::sync::mpsc::channel;
 use chainpack::{RpcMessage, ChainPackWriter, Writer, CponWriter, RpcValue, RpcMessageMetaTags};
-// use tracing::{debug};
-use log::{debug};
+use log::{debug, error};
 use std::time::Duration;
 use chainpack::rpcmessage::RqId;
+use async_std::{
+    channel::{Receiver, Sender},
+    io::{stdin, BufReader, BufWriter},
+    net::{TcpStream, ToSocketAddrs},
+    prelude::*,
+    task,
+};
+use futures::{select, FutureExt};
 
-/// Send and receive `Frame` values from a remote peer.
-///
-/// When implementing networking protocols, a message on that protocol is
-/// often composed of several smaller messages known as frames. The purpose of
-/// `Connection` is to read and write frames on the underlying `TcpStream`.
-///
-/// To read frames, the `Connection` uses an internal buffer, which is filled
-/// up until there are enough bytes to create a full frame. Once this happens,
-/// the `Connection` creates the frame and returns it to the caller.
-///
-/// When sending frames, the frame is first encoded into the write buffer.
-/// The contents of the write buffer are then written to the socket.
+
 #[derive(Debug)]
-pub struct Connection {
-    // The `TcpStream`. It is decorated with a `BufWriter`, which provides write
-    // level buffering. The `BufWriter` implementation provided by Tokio is
-    // sufficient for our needs.
-    stream: BufWriter<TcpStream>,
-
+pub struct Connection<'a> {
+    stream_reader: BufReader<&'a TcpStream>,
+    stream_writer: BufWriter<&'a TcpStream>,
     // The buffer for reading frames.
     buffer: BytesMut,
-    pub protocol: Option<Protocol>,
+    from_client: (Sender<Frame>, Receiver<Frame>),
+    to_client: (Sender<Frame>, Receiver<Frame>),
 }
 
-impl Connection {
-    /// Create a new `Connection`, backed by `socket`. Read and write buffers
-    /// are initialized.
-    pub fn new(socket: TcpStream) -> Connection {
+impl<'a> Connection<'a> {
+    pub fn new(stream: &'a TcpStream) -> Connection<'a> {
         Connection {
-            stream: BufWriter::new(socket),
-            // Default to a 4KB read buffer. For the use case of mini redis,
-            // this is fine. However, real applications will want to tune this
-            // value to their specific use case. There is a high likelihood that
-            // a larger read buffer will work better.
+            stream_reader: BufReader::new(stream),
+            stream_writer: BufWriter::new(stream),
             buffer: BytesMut::with_capacity(4 * 1024),
-            protocol: None,
+            from_client: async_std::channel::bounded(256),
+            to_client: async_std::channel::bounded(256),
         }
     }
-
-    /// Read a single `Frame` value from the underlying stream.
-    ///
-    /// The function waits until it has retrieved enough data to parse a frame.
-    /// Any data remaining in the read buffer after the frame has been parsed is
-    /// kept there for the next call to `read_frame`.
-    ///
-    /// # Returns
-    ///
-    /// On success, the received frame is returned. If the `TcpStream`
-    /// is closed in a way that doesn't break a frame in half, it returns
-    /// `None`. Otherwise, an error is returned.
+    pub fn newClient(&self, protocol: Protocol) -> Client {
+        Client {
+            sender: self.from_client.0.clone(),
+            receiver: self.to_client.1.clone(),
+            protocol
+        }
+    }
+    pub async fn exec(&mut self) -> crate::Result<()> {
+        loop {
+            let mut buf: [u8; 1024] = [0; 1024];
+            select! {
+                n = self.stream_reader.read(&mut buf).fuse() => match n {
+                    Ok(n) => {
+                        debug!("{} bytes read", n);
+                        self.buffer.extend_from_slice(&buf[..n]);
+                        match self.receive_frame() {
+                            Ok(frame) => match frame {
+                                Some(frame) => {
+                                    debug!("New frame from socket received");
+                                    self.to_client.0.send(frame);
+                                }
+                                None => {
+                                    // not all frame data received
+                                }
+                            }
+                            Err(e) => {
+                                error!("read frame error {}", e);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        error!("read socket error {}", e);
+                    },
+                },
+                frame = self.from_client.1.recv().fuse() => match frame {
+                    Ok(frame) => {
+                        self.send_frame(&frame).await?;
+                    }
+                    Err(e) => {
+                        error!("read frame error {}", e);
+                    },
+                }
+            }
+        }
+    }
+    /*
     pub async fn recv_frame(&mut self) -> crate::Result<Frame> {
         loop {
             // Attempt to parse a frame from the buffered data. If enough data
@@ -87,12 +111,8 @@ impl Connection {
             }
         }
     }
-
-    /// Tries to parse a frame from the buffer. If the buffer contains enough
-    /// data, the frame is returned and the data removed from the buffer. If not
-    /// enough data has been buffered yet, `Ok(None)` is returned. If the
-    /// buffered data does not represent a valid frame, `Err` is returned.
-    fn parse_frame(&mut self) -> crate::Result<Option<Frame>> {
+    */
+    fn receive_frame(&mut self) -> crate::Result<Option<Frame>> {
         use frame::Error::Incomplete;
 
         // Cursor is used to track the "current" location in the
@@ -152,14 +172,6 @@ impl Connection {
         }
     }
 
-    /// Write a single `Frame` value to the underlying stream.
-    ///
-    /// The `Frame` value is written to the socket using the various `write_*`
-    /// functions provided by `AsyncWrite`. Calling these functions directly on
-    /// a `TcpStream` is **not** advised, as this will result in a large number of
-    /// syscalls. However, it is fine to call these functions on a *buffered*
-    /// write stream. The data will be written to the buffer. Once the buffer is
-    /// full, it is flushed to the underlying socket.
     pub async fn send_frame(&mut self, frame: &Frame) -> crate::Result<()> {
         // Arrays are encoded by encoding each entry. All other frame types are
         // considered literals. For now, mini-redis is not able to encode
@@ -185,55 +197,13 @@ impl Connection {
         let msg_len = 1 + meta_data.len() + frame.data.len();
         wr.write_uint_data(msg_len as u64)?;
         header.push(frame.protocol as u8);
-        self.stream.write_all(&header).await?;
-        self.stream.write_all(&meta_data).await?;
-        self.stream.write_all(&frame.data).await?;
+        self.stream_writer.write_all(&header).await?;
+        self.stream_writer.write_all(&meta_data).await?;
+        self.stream_writer.write_all(&frame.data).await?;
         // Ensure the encoded frame is written to the socket. The calls above
         // are to the buffered stream and writes. Calling `flush` writes the
         // remaining contents of the buffer to the socket.
-        self.stream.flush().await?;
+        self.stream_writer.flush().await?;
         Ok(())
     }
-    pub async fn recv_message(&mut self) -> crate::Result<RpcMessage> {
-        let frame = self.recv_frame().await?;
-        let msg = frame.to_rpcmesage()?;
-        Ok(msg)
-    }
-    pub async fn recv_message_timeout(&mut self, timeout: Duration) -> crate::Result<RpcMessage> {
-        match tokio::time::timeout(timeout, self.recv_message()).await {
-            Ok(maybe_message) => {
-                maybe_message
-            }
-            Err(e) => {
-                Err(format!("Read message timeout after: {} sec - {}", timeout.as_secs(), e).into())
-            }
-        }
-    }
-    pub async fn send_message(&mut self, message: &RpcMessage) -> crate::Result<()> {
-        let frame = Frame::from_rpcmessage(self.protocol.unwrap(), message);
-        self.send_frame(&frame).await
-    }
-    pub async fn send_request(&mut self, shvpath: &str, method: &str, params: Option<RpcValue>) -> crate::Result<RqId> {
-        let msg = RpcMessage::create_request(shvpath, method, params);
-        let rq_id = msg.request_id().unwrap();
-        self.send_message(&msg).await?;
-        Ok(rq_id)
-    }
-    // pub async fn rpc_call_timeout(&mut self, request: &RpcMessage, timeout: Duration) -> crate::Result<RpcMessage> {
-    //     let fut = async move {
-    //         self.write_message(request).await?;
-    //         self.read_message().await
-    //     };
-    //     match tokio::time::timeout(timeout, fut).await {
-    //         Ok(maybe_message) => {
-    //             match maybe_message {
-    //                 Ok(message) => Ok(message),
-    //                 Err(e) => Err(format!("RPC call error: {}", e).into()),
-    //             }
-    //         }
-    //         Err(e) => {
-    //             Err(format!("Read message timeout after: {} sec - {}", timeout.as_secs(), e).into())
-    //         }
-    //     }
-    // }
 }
