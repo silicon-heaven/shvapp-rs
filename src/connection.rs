@@ -2,7 +2,7 @@ use crate::frame::{self, Frame, Protocol};
 use crate::client::{Client};
 use bytes::{Buf, BytesMut};
 use std::io::{Cursor};
-use chainpack::{RpcMessage, ChainPackWriter, Writer, CponWriter};
+use chainpack::{ChainPackWriter, Writer, CponWriter};
 use log::{debug, error};
 use async_std::{
     channel::{Receiver, Sender},
@@ -12,15 +12,16 @@ use async_std::{
     // task,
 };
 use futures::{select, FutureExt};
+use postage::prelude::Sink;
 
-
-#[derive(Debug)]
+//#[derive(Debug)]
 pub struct Connection {
     stream: TcpStream,
     // The buffer for reading frames.
     buffer: BytesMut,
     from_client: (Sender<Frame>, Receiver<Frame>),
-    to_client: (Sender<Frame>, Receiver<Frame>),
+    // to_client: (Sender<Frame>, Receiver<Frame>),
+    to_client: (postage::broadcast::Sender<Frame>, postage::broadcast::Receiver<Frame>),
 }
 
 impl Connection {
@@ -29,7 +30,10 @@ impl Connection {
             stream,
             buffer: BytesMut::with_capacity(4 * 1024),
             from_client: async_std::channel::bounded(256),
-            to_client: async_std::channel::bounded(256),
+            //to_client: async_std::channel::bounded(256),
+            // unfortunately, async-std channel is dispatch not broadcast
+            // we have to use broadcast channel from postage crate
+            to_client: postage::broadcast::channel(256),
         }
     }
     pub fn create_client(&self, protocol: Protocol) -> Client {
@@ -45,12 +49,12 @@ impl Connection {
             select! {
                 n = self.stream.read(&mut buf).fuse() => match n {
                     Ok(n) => {
-                        debug!("{} bytes read", n);
+                        debug!("{} bytes read from socket", n);
                         self.buffer.extend_from_slice(&buf[..n]);
                         match self.receive_frame() {
                             Ok(frame) => match frame {
                                 Some(frame) => {
-                                    debug!("New frame from socket received");
+                                    //debug!("New frame from socket received: {}", &frame);
                                     self.to_client.0.send(frame).await?;
                                 }
                                 None => {
@@ -68,6 +72,7 @@ impl Connection {
                 },
                 frame = self.from_client.1.recv().fuse() => match frame {
                     Ok(frame) => {
+                        debug!(target: "rpcmsg", "Frame to send from client: {}", &frame);
                         self.send_frame(&frame).await?;
                     }
                     Err(e) => {
@@ -77,36 +82,6 @@ impl Connection {
             }
         }
     }
-    /*
-    pub async fn recv_frame(&mut self) -> crate::Result<Frame> {
-        loop {
-            // Attempt to parse a frame from the buffered data. If enough data
-            // has been buffered, the frame is returned.
-            if let Some(frame) = self.parse_frame()? {
-                if frame.data.len() < 1024 {
-                    debug!("===> {}", frame.to_rpcmesage().unwrap_or(RpcMessage::default()));
-                } else {
-                    debug!("===> {}", frame);
-                }
-                return Ok(frame);
-            }
-
-            // There is not enough buffered data to read a frame. Attempt to
-            // read more data from the socket.
-            //
-            // On success, the number of bytes is returned. `0` indicates "end
-            // of stream".
-            if 0 == self.stream.read_buf(&mut self.buffer).await? {
-                // The remote closed the connection. For this to be a clean
-                // shutdown, there should be no data in the read buffer. If
-                // there is, this means that the peer closed the socket while
-                // sending a frame.
-                //return Err("connection reset by peer".into())
-                return Err("connection reset by peer".into())
-            }
-        }
-    }
-    */
     fn receive_frame(&mut self) -> crate::Result<Option<Frame>> {
         use frame::Error::Incomplete;
 
@@ -142,6 +117,7 @@ impl Connection {
                 match result {
                    Ok(frame) => {
                        self.buffer.advance(frame_len);
+                       debug!(target: "rpcmsg", "<=== {}", frame);
                        Ok(Some(frame))
                    }
                    Err(e) => {
@@ -171,11 +147,7 @@ impl Connection {
         // Arrays are encoded by encoding each entry. All other frame types are
         // considered literals. For now, mini-redis is not able to encode
         // recursive frame structures. See below for more details.
-        if frame.data.len() < 1024 {
-            debug!("<=== {}", frame.to_rpcmesage().unwrap_or(RpcMessage::default()));
-        } else {
-            debug!("<=== {}", frame);
-        }
+        debug!(target: "rpcmsg", "===> {}", frame);
         let mut meta_data = Vec::new();
         match &frame.protocol {
             Protocol::ChainPack => {

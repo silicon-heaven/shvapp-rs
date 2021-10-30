@@ -9,13 +9,14 @@ use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue};
 use crate::frame::Protocol;
 use std::time::Duration;
 use async_std::{
-    channel::{Receiver, Sender},
+    channel::{Sender},
     // io::{stdin, BufReader, BufWriter},
     // net::{TcpStream, ToSocketAddrs},
     //prelude::*,
     task,
     future,
 };
+use postage::prelude::Stream;
 use log::{debug, info, warn, error};
 
 const DEFAULT_RPC_CALL_TIMEOUT_MS: u64 = 5000;
@@ -87,14 +88,14 @@ impl ConnectionParams {
 #[derive(Clone)]
 pub struct Client {
     pub(crate) sender: Sender<Frame>,
-    pub(crate) receiver: Receiver<Frame>,
+    pub(crate) receiver: postage::broadcast::Receiver<Frame>,
     pub protocol: Protocol,
 }
 
 impl Client {
 
     pub async fn login(&mut self, login_params: &ConnectionParams) -> crate::Result<()> {
-        let hello_resp = self.call(RpcMessage::create_request("", "hello", None)).await?;
+        let hello_resp = self.call_rpc_method(RpcMessage::create_request("", "hello", None)).await?;
         debug!("hello resp {}", hello_resp);
         let mut login_params = login_params.clone();
         if login_params.password.len() != 40 {
@@ -110,19 +111,19 @@ impl Client {
                 warn!("hello response params missing!");
             }
         }
-        let login_resp = self.call(RpcMessage::create_request("", "login", Some(login_params.to_rpcvalue()))).await?;
+        let login_resp = self.call_rpc_method(RpcMessage::create_request("", "login", Some(login_params.to_rpcvalue()))).await?;
         debug!("login result: {}", login_resp);
         match login_resp.result() {
             Some(_) => {
                 let heartbeat_interval = login_params.idle_watchdog_timeout as u64 / 3;
                 if heartbeat_interval >= 60 {
-                    let mut client = self.clone();
+                    let client = self.clone();
                     task::spawn(async move {
-                        info!("Starting heart-beat task with period: {}", heartbeat_interval);
+                        info!("Starting heart-beat task with period: {} sec", heartbeat_interval);
                         loop {
                             task::sleep(Duration::from_secs(heartbeat_interval)).await;
                             debug!("Sending heart beat");
-                            let res = client.call(RpcMessage::create_request(".broker/app", "ping", None)).await;
+                            let res = client.call_rpc_method(RpcMessage::create_request(".broker/app", "ping", None)).await;
                             match res {
                                 Ok(_) => {}
                                 Err(e) => error!("cannot send ping: {}", e),
@@ -136,19 +137,21 @@ impl Client {
         }
     }
 
-    pub async fn call(&mut self, request: RpcMessage) -> crate::Result<RpcMessage> {
+    pub async fn call_rpc_method(& self, request: RpcMessage) -> crate::Result<RpcMessage> {
         if !request.is_request() {
             return Err("Not request".into())
         }
         let rq_id = request.request_id().ok_or("Request ID missing")?;
-        debug!("sending RPC request id: {} .............. {}", rq_id, request);
+        debug!("sending RPC request id: {} msg: {}", rq_id, request);
         self.send_message(&request).await?;
+        let mut client = self.clone();
         match future::timeout(Duration::from_millis(DEFAULT_RPC_CALL_TIMEOUT_MS), async move {
             loop {
-                let resp = self.receive_message().await?;
+                let resp = client.receive_message().await?;
+                debug!("{} maybe response: {}", rq_id, resp);
                 if let Some(id) = resp.request_id() {
                     if id == rq_id {
-                        let resp = resp.clone();
+                        //let resp = resp.clone();
                         debug!("{} .............. got response: {}", rq_id, resp);
                         return Ok(resp)
                     }
@@ -164,8 +167,11 @@ impl Client {
         Ok(())
     }
     pub async fn receive_frame(&mut self) -> crate::Result<Frame> {
-        let frame = self.receiver.recv().await?;
-        return Ok(frame)
+        let frame = self.receiver.recv().await;
+        match frame {
+            None => Err("read error".into()),
+            Some(frame) => Ok(frame)
+        }
     }
     pub async fn send_message(& self, msg: &RpcMessage) -> crate::Result<()> {
         let frame = Frame::from_rpcmessage(self.protocol, &msg);

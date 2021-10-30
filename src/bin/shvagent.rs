@@ -197,7 +197,7 @@ async fn try_main() -> shvapp::Result<()> {
                 loop {
                     match client.receive_message().await {
                         Ok(msg) => {
-                            debug!("Message arrived: {}", msg);
+                            debug!(target: "rpcmsg", "<== Message arrived: {}", msg);
                             if msg.is_request() {
                                 let ret_val = shv_tree.process_request(&client,&msg);
                                 if let Ok(None) = ret_val {
@@ -210,10 +210,12 @@ async fn try_main() -> shvapp::Result<()> {
                                                 Ok(None) => {}
                                                 Ok(Some(rv)) => {
                                                     resp_msg.set_result(rv);
+                                                    debug!(target: "rpcmsg", "==> Sending response: {}", &resp_msg);
                                                     client.send_message(&resp_msg).await?;
                                                 }
                                                 Err(e) => {
                                                     resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
+                                                    debug!(target: "rpcmsg", "==> Sending error: {}", &resp_msg);
                                                     client.send_message(&resp_msg).await?;
                                                 }
                                             }
