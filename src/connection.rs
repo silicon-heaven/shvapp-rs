@@ -1,7 +1,6 @@
-use crate::frame::{self, Frame, Protocol};
+use crate::frame::{Frame, Protocol};
 use crate::client::{Client};
 use bytes::{Buf, BytesMut};
-use std::io::{Cursor};
 use chainpack::{ChainPackWriter, Writer, CponWriter};
 use log::{debug, error};
 use async_std::{
@@ -12,7 +11,12 @@ use async_std::{
     // task,
 };
 use futures::{select, FutureExt};
-use postage::prelude::Sink;
+use async_broadcast::{broadcast};
+
+enum LogFramePrompt {
+    Send,
+    Receive,
+}
 
 //#[derive(Debug)]
 pub struct Connection {
@@ -21,7 +25,7 @@ pub struct Connection {
     buffer: BytesMut,
     from_client: (Sender<Frame>, Receiver<Frame>),
     // to_client: (Sender<Frame>, Receiver<Frame>),
-    to_client: (postage::broadcast::Sender<Frame>, postage::broadcast::Receiver<Frame>),
+    to_client: (async_broadcast::Sender<Frame>, async_broadcast::Receiver<Frame>),
 }
 
 impl Connection {
@@ -33,7 +37,7 @@ impl Connection {
             //to_client: async_std::channel::bounded(256),
             // unfortunately, async-std channel is dispatch not broadcast
             // we have to use broadcast channel from postage crate
-            to_client: postage::broadcast::channel(256),
+            to_client: broadcast(256),
         }
     }
     pub fn create_client(&self, protocol: Protocol) -> Client {
@@ -50,19 +54,26 @@ impl Connection {
                 n = self.stream.read(&mut buf).fuse() => match n {
                     Ok(n) => {
                         debug!("{} bytes read from socket", n);
+                        if n == 0 {
+                            return Err("socket closed by peer.".into())
+                        }
                         self.buffer.extend_from_slice(&buf[..n]);
-                        match self.receive_frame() {
-                            Ok(frame) => match frame {
-                                Some(frame) => {
-                                    //debug!("New frame from socket received: {}", &frame);
-                                    self.to_client.0.send(frame).await?;
+                        loop {
+                            match self.receive_frame() {
+                                Ok(frame) => match frame {
+                                    Some(frame) => {
+                                        //debug!("New frame from socket received: {}", &frame);
+                                        self.to_client.0.broadcast(frame).await?;
+                                    }
+                                    None => {
+                                        // not all frame data received
+                                        break;
+                                    }
                                 }
-                                None => {
-                                    // not all frame data received
+                                Err(e) => {
+                                    error!("read frame error {}", e);
+                                    break;
                                 }
-                            }
-                            Err(e) => {
-                                error!("read frame error {}", e);
                             }
                         }
                     },
@@ -83,71 +94,24 @@ impl Connection {
         }
     }
     fn receive_frame(&mut self) -> crate::Result<Option<Frame>> {
-        use frame::Error::Incomplete;
-
-        // Cursor is used to track the "current" location in the
-        // buffer. Cursor also implements `Buf` from the `bytes` crate
-        // which provides a number of helpful utilities for working
-        // with bytes.
-        let mut buff_cursor = Cursor::new(&self.buffer[..]);
-
-        // The first step is to check if enough data has been buffered to parse
-        // a single frame. This step is usually much faster than doing a full
-        // parse of the frame, and allows us to skip allocating data structures
-        // to hold the frame data unless we know the full frame has been
-        // received.
-        match Frame::check(&mut buff_cursor) {
-            Ok(frame_len) => {
-                // The `check` function will have advanced the cursor until the
-                // end of the frame. Since the cursor had position set to zero
-                // before `Frame::check` was called, we obtain the length of the
-                // frame by checking the cursor position.
-                //let header_len = buff_cursor.position() as usize;
-
-                // Parse the frame from the buffer. This allocates the necessary
-                // structures to represent the frame and returns the frame
-                // value.
-                //
-                // If the encoded frame representation is invalid, an error is
-                // returned. This should terminate the **current** connection
-                // but should not impact any other connected client.
-                // debug!("check header len: {}", header_len);
-                // debug!("check frame len: {}", frame_len);
-                let result = Frame::parse(&mut buff_cursor, frame_len);
-                match result {
-                   Ok(frame) => {
-                       self.buffer.advance(frame_len);
-                       debug!(target: "rpcmsg", "<=== {}", frame);
-                       Ok(Some(frame))
-                   }
-                   Err(e) => {
-                       // ignore rest of data in case of corrupted message
-                       self.buffer.advance(frame_len);
-                       return Err(e.into())
-                   }
+        let buff = &self.buffer[..];
+        match Frame::parse(buff) {
+            Ok(maybe_frame) => {
+                match maybe_frame {
+                    None => { return Ok(None); }
+                    Some((frame_len, frame)) => {
+                        self.buffer.advance(frame_len);
+                        Connection::log_frame(&frame, LogFramePrompt::Receive);
+                        Ok(Some(frame))
+                    }
                 }
-                // Return the parsed frame to the caller.
             }
-            // There is not enough data present in the read buffer to parse a
-            // single frame. We must wait for more data to be received from the
-            // socket. Reading from the socket will be done in the statement
-            // after this `match`.
-            //
-            // We do not want to return `Err` from here as this "error" is an
-            // expected runtime condition.
-            Err(Incomplete) => Ok(None),
-            // An error was encountered while parsing the frame. The connection
-            // is now in an invalid state. Returning `Err` from here will result
-            // in the connection being closed.
             Err(e) => Err(e.into()),
         }
     }
 
-    pub async fn send_frame(&mut self, frame: &Frame) -> crate::Result<()> {
-        // Arrays are encoded by encoding each entry. All other frame types are
-        // considered literals. For now, mini-redis is not able to encode
-        // recursive frame structures. See below for more details.
-        debug!(target: "rpcmsg", "===> {}", frame);
+    async fn send_frame(&mut self, frame: &Frame) -> crate::Result<()> {
+        Connection::log_frame(&frame, LogFramePrompt::Send);
         let mut meta_data = Vec::new();
         match &frame.protocol {
             Protocol::ChainPack => {
@@ -172,5 +136,21 @@ impl Connection {
         // remaining contents of the buffer to the socket.
         self.stream.flush().await?;
         Ok(())
+    }
+
+    fn log_frame(frame: &Frame, prompt: LogFramePrompt) {
+        let prompt_str = match prompt { LogFramePrompt::Send => "<===", LogFramePrompt::Receive => "===>" };
+        if frame.data.len() < 1024 {
+            match frame.to_rpcmesage() {
+                Ok(rpcmessage) => {
+                    debug!(target: "rpcmsg", "{} {}", prompt_str, rpcmessage);
+                }
+                Err(_) => {
+                    debug!(target: "rpcmsg", "{} {}", prompt_str, frame);
+                }
+            }
+        } else {
+            debug!(target: "rpcmsg", "{} {}", prompt_str, frame);
+        }
     }
 }

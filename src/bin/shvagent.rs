@@ -197,7 +197,7 @@ async fn try_main() -> shvapp::Result<()> {
                 loop {
                     match client.receive_message().await {
                         Ok(msg) => {
-                            debug!(target: "rpcmsg", "<== Message arrived: {}", msg);
+                            //info!(target: "rpcmsg", "<== Message arrived: {}", msg);
                             if msg.is_request() {
                                 let ret_val = shv_tree.process_request(&client,&msg);
                                 if let Ok(None) = ret_val {

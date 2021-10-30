@@ -16,7 +16,6 @@ use async_std::{
     task,
     future,
 };
-use postage::prelude::Stream;
 use log::{debug, info, warn, error};
 
 const DEFAULT_RPC_CALL_TIMEOUT_MS: u64 = 5000;
@@ -88,7 +87,7 @@ impl ConnectionParams {
 #[derive(Clone)]
 pub struct Client {
     pub(crate) sender: Sender<Frame>,
-    pub(crate) receiver: postage::broadcast::Receiver<Frame>,
+    pub(crate) receiver: async_broadcast::Receiver<Frame>,
     pub protocol: Protocol,
 }
 
@@ -148,7 +147,7 @@ impl Client {
         match future::timeout(Duration::from_millis(DEFAULT_RPC_CALL_TIMEOUT_MS), async move {
             loop {
                 let resp = client.receive_message().await?;
-                debug!("{} maybe response: {}", rq_id, resp);
+                info!(target: "rpcmsg", "{} maybe response: {}", rq_id, resp);
                 if let Some(id) = resp.request_id() {
                     if id == rq_id {
                         //let resp = resp.clone();
@@ -167,11 +166,8 @@ impl Client {
         Ok(())
     }
     pub async fn receive_frame(&mut self) -> crate::Result<Frame> {
-        let frame = self.receiver.recv().await;
-        match frame {
-            None => Err("read error".into()),
-            Some(frame) => Ok(frame)
-        }
+        let frame = self.receiver.recv().await?;
+        Ok(frame)
     }
     pub async fn send_message(& self, msg: &RpcMessage) -> crate::Result<()> {
         let frame = Frame::from_rpcmessage(self.protocol, &msg);

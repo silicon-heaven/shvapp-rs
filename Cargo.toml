@@ -14,7 +14,7 @@ structopt = "0.3.14"
 chrono = "0.4"
 
 async-std = { version = "1.10.0", features = ["unstable"] }
-postage = "0.4.1"
+async-broadcast = "0.3.4"
 
 futures = "0.3.17"
 atoi = "0.3.2"

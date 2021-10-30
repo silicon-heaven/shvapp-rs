@@ -3,8 +3,6 @@
 
 use std::fmt;
 use std::io::{Cursor, BufReader};
-use std::num::TryFromIntError;
-use std::string::FromUtf8Error;
 use chainpack::{ChainPackReader, Reader, RpcMessage, CponReader, MetaMap, ChainPackWriter, CponWriter, Writer};
 // use tracing::{instrument};
 use bytes::Buf;
@@ -15,15 +13,6 @@ pub struct Frame {
     pub protocol: Protocol,
     pub meta: MetaMap,
     pub data: Vec<u8>,
-}
-
-#[derive(Debug)]
-pub enum Error {
-    /// Not enough data is available to parse a message
-    Incomplete,
-
-    /// Invalid message encoding
-    Other(crate::Error),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,7 +47,7 @@ impl Frame {
         let meta = msg.as_rpcvalue().meta().clone();
         Frame{ protocol, meta, data }
     }
-    pub fn to_rpcmesage(&self) -> Result<RpcMessage, Error> {
+    pub fn to_rpcmesage(&self) -> crate::Result<RpcMessage> {
         let mut buff = BufReader::new(&*self.data);
         let value;
         match &self.protocol {
@@ -73,86 +62,44 @@ impl Frame {
         }
         Ok(RpcMessage::new(self.meta.clone(), value))
     }
-    /// Checks if an entire message can be decoded from `src`
-    pub fn check(buff: &mut Cursor<&[u8]>) -> Result<usize, Error> {
-        // min RpcMessage must have at least 6 bytes
-        const MIN_LEN: usize = 6;
-        let buff_len = buff.get_ref().len();
-        if buff_len < MIN_LEN {
-            return Err(Error::Incomplete)
-        }
-        let mut cpk_rd = ChainPackReader::new(buff);
-        let msg_len = cpk_rd.read_uint_data()? as usize;
-        let header_len = buff.position() as usize;
-        if buff_len < header_len + msg_len {
-            return Err(Error::Incomplete)
-        }
-        return Ok(header_len + msg_len)
-    }
 
     /// The message has already been validated with `check`.
-    pub fn parse(buff: &mut Cursor<&[u8]>, frame_len: usize) -> Result<Frame, Error> {
+    pub fn parse(buff: &[u8]) -> crate::Result<Option<(usize, Frame)>> {
+        // min RpcMessage must have at least 6 bytes
+        const MIN_LEN: usize = 6;
+        let buff_len = buff.len();
+        if buff_len < MIN_LEN {
+            return Ok(None)
+        }
         // debug!("parse pos1: {}", buff.position());
-        let proto = buff.get_u8();
+        let mut buff_cursor = Cursor::new(buff);
+        let mut cpk_rd = ChainPackReader::new(&mut buff_cursor);
+        let msg_len = cpk_rd.read_uint_data()? as usize;
+        let header_len = buff_cursor.position() as usize;
+        let frame_len = header_len + msg_len;
+        if buff_len < frame_len {
+            return Ok(None)
+        }
+        let proto = buff_cursor.get_u8();
         let protocol;
         let meta;
         if proto == Protocol::ChainPack as u8 {
             protocol = Protocol::ChainPack;
-            let mut rd = ChainPackReader::new(buff);
+            let mut rd = ChainPackReader::new(&mut buff_cursor);
             meta = rd.try_read_meta()?.unwrap();
         } else if proto == Protocol::Cpon as u8 {
             protocol = Protocol::Cpon;
-            let mut rd = CponReader::new(buff);
+            let mut rd = CponReader::new(&mut buff_cursor);
             meta = rd.try_read_meta()?.unwrap();
         } else {
-            return Err(Error::from(format!("Invalid protocol: {}!", proto)))
+            return Err(format!("Invalid protocol: {}!", proto).into())
         }
-        let pos = buff.position() as usize;
+        let pos = buff_cursor.position() as usize;
         // debug!("parse pos2: {}", pos);
         // debug!("parse data len: {}", (frame_len - pos));
-        let data: Vec<u8> = buff.get_ref()[pos .. frame_len].into();
-        return Ok(Frame{protocol, meta, data})
+        let data: Vec<u8> = buff[pos .. frame_len].into();
+        return Ok(Some((frame_len, Frame { protocol, meta, data })))
     }
-    /*
-    /// Apply the `Frame` command to the specified `Db` instance.
-    ///
-    /// The response is written to `dst`. This is called by the server in order
-    /// to execute a received command.
-    //#[instrument(skip(self, db, dst))]
-    pub(crate) async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
-        // echo for now
-        if self.meta.is_request() {
-            let method = self.meta.method().ok_or("no method")?;
-            match RpcMessage::prepare_response_meta(&self.meta) {
-                Ok(resp_meta) => {
-                    let result;
-                    if method == "hello" {
-                        let mut map = chainpack::rpcvalue::Map::new();
-                        map.insert("nonce".into(), RpcValue::new("123456"));
-                        result = RpcValue::new(map);
-                    } else if method == "ping" {
-                        result = RpcValue::new(true);
-                    } else {
-                        result = RpcValue::new(format!("echo '{}'", method));
-                    }
-                    let mut resp = RpcMessage::from_meta(resp_meta);
-                    resp.set_result(result);                // Write the response back to the client
-                    dst.send_frame(&Frame::from_rpcmessage(self.protocol, &resp)).await?;
-                    Ok(())
-                }
-                Err(e) => {
-                    Err(e.into())
-                }
-            }
-        } else {
-            Err(format!("apply frame not implemented: {}", self).into())
-        }
-    }
-    */
-    // Converts the frame to an "unexpected frame" error
-    // pub(crate) fn to_error(&self) -> crate::Error {
-    //     format!("unexpected frame: {}", self).into()
-    // }
 }
 
 impl fmt::Display for Frame {
@@ -161,43 +108,3 @@ impl fmt::Display for Frame {
     }
 }
 
-impl From<String> for Error {
-    fn from(src: String) -> Error {
-        Error::Other(src.into())
-    }
-}
-
-impl From<&str> for Error {
-    fn from(src: &str) -> Error {
-        src.to_string().into()
-    }
-}
-
-impl From<FromUtf8Error> for Error {
-    fn from(_src: FromUtf8Error) -> Error {
-        "protocol error; invalid frame format".into()
-    }
-}
-
-impl From<TryFromIntError> for Error {
-    fn from(_src: TryFromIntError) -> Error {
-        "protocol error; invalid frame format".into()
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl fmt::Display for Error {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Error::Incomplete => "stream ended early".fmt(fmt),
-            Error::Other(err) => err.fmt(fmt),
-        }
-    }
-}
-
-impl From<chainpack::ReadError> for Error {
-    fn from(e: chainpack::ReadError) -> Error {
-        e.msg.into()
-    }
-}
