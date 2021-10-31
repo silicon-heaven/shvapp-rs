@@ -84,15 +84,23 @@ impl ConnectionParams {
     }
 }
 
+pub type ClientTx = Sender<Frame>;
+pub type ClientRx = async_broadcast::Receiver<Frame>;
+
+#[derive(Clone)]
+pub struct ClientSender {
+    pub(crate) sender: ClientTx,
+    pub protocol: Protocol,
+}
+
 #[derive(Clone)]
 pub struct Client {
-    pub(crate) sender: Sender<Frame>,
-    pub(crate) receiver: async_broadcast::Receiver<Frame>,
+    pub(crate) sender: ClientTx,
+    pub(crate) receiver: ClientRx,
     pub protocol: Protocol,
 }
 
 impl Client {
-
     pub async fn login(&mut self, login_params: &ConnectionParams) -> crate::Result<()> {
         let hello_resp = self.call_rpc_method(RpcMessage::create_request("", "hello", None)).await?;
         debug!("hello resp {}", hello_resp);
@@ -116,13 +124,18 @@ impl Client {
             Some(_) => {
                 let heartbeat_interval = login_params.idle_watchdog_timeout as u64 / 3;
                 if heartbeat_interval >= 60 {
-                    let client = self.clone();
+                    let client_sender = self.to_sender();
                     task::spawn(async move {
                         info!("Starting heart-beat task with period: {} sec", heartbeat_interval);
                         loop {
                             task::sleep(Duration::from_secs(heartbeat_interval)).await;
                             debug!("Sending heart beat");
+                            let res = client_sender.send_message(&RpcMessage::create_request(".broker/app", "ping", None)).await;
+                            /*
+                            // until I solve problem how to read Rx end of Client clone while waiting
+                            // for heart beat timer expiration, I'll send just ping requests without waiting for response
                             let res = client.call_rpc_method(RpcMessage::create_request(".broker/app", "ping", None)).await;
+                            */
                             match res {
                                 Ok(_) => {}
                                 Err(e) => error!("cannot send ping: {}", e),
@@ -183,8 +196,22 @@ impl Client {
         future::timeout(timeout, self.receive_message()).await?
     }
 
-    // pub fn as_sender(& self) -> &RpcMessageTx {
-    //     &self.send_message_tx
-    // }
+    pub fn to_sender(& self) -> ClientSender {
+        ClientSender {
+            sender: self.sender.clone(),
+            protocol: self.protocol,
+        }
+    }
 }
 
+impl ClientSender {
+    pub async fn send_frame(& self, frame: Frame) -> crate::Result<()> {
+        self.sender.send(frame).await?;
+        Ok(())
+    }
+    pub async fn send_message(& self, msg: &RpcMessage) -> crate::Result<()> {
+        let frame = Frame::from_rpcmessage(self.protocol, &msg);
+        self.send_frame(frame).await?;
+        Ok(())
+    }
+}

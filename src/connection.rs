@@ -4,7 +4,7 @@ use bytes::{Buf, BytesMut};
 use chainpack::{ChainPackWriter, Writer, CponWriter};
 use log::{debug, error};
 use async_std::{
-    channel::{Receiver, Sender},
+    channel::{Receiver},
     // io::{stdin, BufReader, BufWriter},
     net::{TcpStream},
     prelude::*,
@@ -23,31 +23,38 @@ pub struct Connection {
     stream: TcpStream,
     // The buffer for reading frames.
     buffer: BytesMut,
-    from_client: (Sender<Frame>, Receiver<Frame>),
+    from_client: Receiver<Frame>,
     // to_client: (Sender<Frame>, Receiver<Frame>),
-    to_client: (async_broadcast::Sender<Frame>, async_broadcast::Receiver<Frame>),
+    to_client: async_broadcast::Sender<Frame>,
 }
 
 impl Connection {
-    pub fn new(stream: TcpStream) -> Connection {
-        Connection {
-            stream,
-            buffer: BytesMut::with_capacity(4 * 1024),
-            from_client: async_std::channel::bounded(256),
-            //to_client: async_std::channel::bounded(256),
-            // unfortunately, async-std channel is dispatch not broadcast
-            // we have to use broadcast channel from postage crate
-            to_client: broadcast(256),
-        }
-    }
-    pub fn create_client(&self, protocol: Protocol) -> Client {
-        Client {
-            sender: self.from_client.0.clone(),
-            receiver: self.to_client.1.clone(),
-            protocol
-        }
+    pub fn new(stream: TcpStream, protocol: Protocol) -> (Connection, Client) {
+        // to_client_capacity 1 should be sufficient, the socket reader will be blocked
+        // if the channel will be full (in case of async_broadcast implementation).
+        // If some client will not read receive end, then whole app will be blocked !!!
+        const FROM_CLIENT_CHANNEL_CAPACITY: usize = 256;
+        const TO_CLIENT_CHANNEL_CAPACITY: usize = 2;
+        let from_client_channel = async_std::channel::bounded(FROM_CLIENT_CHANNEL_CAPACITY);
+        let to_client_channel = broadcast(TO_CLIENT_CHANNEL_CAPACITY);
+        (
+            Connection {
+                stream,
+                buffer: BytesMut::with_capacity(4 * 1024),
+                from_client: from_client_channel.1,
+                to_client: to_client_channel.0,
+                // unfortunately, async-std channel is dispatch not broadcast
+                // we have to use broadcast channel from postage crate
+            },
+            Client {
+                sender: from_client_channel.0,
+                receiver: to_client_channel.1,
+                protocol
+            }
+        )
     }
     pub async fn exec(&mut self) -> crate::Result<()> {
+        let mut frame_cnt = 1;
         loop {
             let mut buf: [u8; 1024] = [0; 1024];
             select! {
@@ -62,8 +69,10 @@ impl Connection {
                             match self.receive_frame() {
                                 Ok(frame) => match frame {
                                     Some(frame) => {
-                                        //debug!("New frame from socket received: {}", &frame);
-                                        self.to_client.0.broadcast(frame).await?;
+                                        debug!("{} sender is full: {}, Sending frame to clients ............: {}", frame_cnt, self.to_client.is_full(), &frame);
+                                        self.to_client.broadcast(frame).await?;
+                                        debug!("{} ............ SENT", frame_cnt);
+                                        frame_cnt += 1;
                                     }
                                     None => {
                                         // not all frame data received
@@ -81,7 +90,7 @@ impl Connection {
                         error!("read socket error {}", e);
                     },
                 },
-                frame = self.from_client.1.recv().fuse() => match frame {
+                frame = self.from_client.recv().fuse() => match frame {
                     Ok(frame) => {
                         debug!(target: "rpcmsg", "Frame to send from client: {}", &frame);
                         self.send_frame(&frame).await?;

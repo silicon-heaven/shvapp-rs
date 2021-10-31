@@ -168,8 +168,7 @@ async fn try_main() -> shvapp::Result<()> {
         info!("connecting to: {}", addr);
         let stream = TcpStream::connect(&addr).await?;
         info!("connected to: {}", addr);
-        let mut connection = Connection::new(stream);
-        let mut client = connection.create_client(connection_params.protocol);
+        let (mut connection, mut client) = Connection::new(stream, connection_params.protocol);
         task::spawn(async move {
             info!("Spawning connection message loop");
             match connection.exec().await {
@@ -253,7 +252,7 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
             if method == "dir" {
                 let methods = [
                     MetaMethod { name: "dir".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
-                    MetaMethod { name: "ls".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
+                    //MetaMethod { name: "ls".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() },
                     MetaMethod { name: "appName".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("bws"), description: "".into() },
                     MetaMethod { name: "deviceId".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("rd"), description: "".into() },
                     MetaMethod { name: "runCmd".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("wr"), description: "".into() },
