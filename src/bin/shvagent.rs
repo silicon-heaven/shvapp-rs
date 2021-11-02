@@ -233,7 +233,7 @@ async fn try_main() -> shvapp::Result<()> {
                 }
             }
             Err(e) => {
-                info!("Login error: {}", e);
+                warn!("Login error: {}", e);
                 task::sleep(Duration::from_secs(5)).await;
             }
         };

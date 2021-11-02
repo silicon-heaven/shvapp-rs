@@ -33,8 +33,10 @@ impl Connection {
         // to_client_capacity 1 should be sufficient, the socket reader will be blocked
         // if the channel will be full (in case of async_broadcast implementation).
         // If some client will not read receive end, then whole app will be blocked !!!
-        const FROM_CLIENT_CHANNEL_CAPACITY: usize = 256;
+        // BUT the login function makes 2 RPC calls on self clones (because of RPC timeout, see Client::call_rpc_method),
+        // this is why capacity must be >= 2
         const TO_CLIENT_CHANNEL_CAPACITY: usize = 2;
+        const FROM_CLIENT_CHANNEL_CAPACITY: usize = 256;
         let from_client_channel = async_std::channel::bounded(FROM_CLIENT_CHANNEL_CAPACITY);
         let to_client_channel = broadcast(TO_CLIENT_CHANNEL_CAPACITY);
         (

@@ -160,7 +160,7 @@ impl Client {
         match future::timeout(Duration::from_millis(DEFAULT_RPC_CALL_TIMEOUT_MS), async move {
             loop {
                 let resp = client.receive_message().await?;
-                info!(target: "rpcmsg", "{} maybe response: {}", rq_id, resp);
+                debug!(target: "rpcmsg", "{} maybe response: {}", rq_id, resp);
                 if let Some(id) = resp.request_id() {
                     if id == rq_id {
                         //let resp = resp.clone();
