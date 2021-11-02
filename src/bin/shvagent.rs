@@ -1,5 +1,6 @@
 use structopt::StructOpt;
-use std::{env, io};
+use std::{env};
+use std::collections::HashMap;
 use std::time::Duration;
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue, metamethod};
 
@@ -14,10 +15,6 @@ use shvapp::shvfsnode::FSDirRequestProcessor;
 
 use log::{warn, info, debug, LevelFilter};
 
-use fern::colors::ColoredLevelConfig;
-use colored::Color;
-use colored::Colorize;
-
 use async_std::{
     process::Command,
     // channel::{Receiver, Sender},
@@ -27,6 +24,9 @@ use async_std::{
     task,
     // future,
 };
+use chrono::{NaiveDateTime, TimeZone};
+use flexi_logger::{DeferredNow, Logger, Record};
+use flexi_logger::filter::{LogLineFilter, LogLineWriter};
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
@@ -50,8 +50,8 @@ struct Cli {
 }
 
 // const DEFAULT_RPC_TIMEOUT_MSEC: u64 = 5000;
-
-fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFilter)>, fern::InitError> {
+/*
+fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFilter)>, std::error::Error> {
     let mut ret: Vec<(String, log::LevelFilter)> = Vec::new();
     let colors = ColoredLevelConfig::new()
         // use builder methods
@@ -118,6 +118,67 @@ fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFi
         .apply()?;
     Ok(ret)
 }
+*/
+struct TopicVerbosity {
+    levels: HashMap<String, log::LevelFilter>
+}
+impl TopicVerbosity {
+    pub fn new(verbosity: &str) -> TopicVerbosity {
+        let mut bc = TopicVerbosity {
+            levels: HashMap::new()
+        };
+        let mut default_level_set = false;
+        for level_str in verbosity.split(',') {
+            let parts: Vec<&str> = level_str.split(':').collect();
+            let (target, level_abbr) = if parts.len() == 1 {
+                (parts[0], "T")
+            } else if parts.len() == 2 {
+                (parts[0], parts[1])
+            } else {
+                panic!("Cannot happen");
+            };
+            let level = match level_abbr {
+                "D" => log::LevelFilter::Debug,
+                "I" => log::LevelFilter::Info,
+                "W" => log::LevelFilter::Warn,
+                "E" => log::LevelFilter::Error,
+                _ => log::LevelFilter::Trace,
+            };
+            bc.levels.insert(target.into(),level);
+            if target.is_empty() {
+                default_level_set = true;
+            }
+        }
+        if !default_level_set {
+            bc.levels.insert("".into(),LevelFilter::Info);
+        }
+        bc
+    }
+}
+impl LogLineFilter for TopicVerbosity {
+    fn write(&self, now: &mut DeferredNow, record: &log::Record, log_line_writer: &dyn LogLineWriter) -> std::io::Result<()> {
+        let level = self.levels.get(record.target()).unwrap_or(&log::LevelFilter::Info);
+        if &record.level() <= level {
+            log_line_writer.write(now, record)?;
+        }
+        Ok(())
+    }
+}
+
+pub fn log_format(w: &mut dyn std::io::Write, now: &mut DeferredNow, record: &Record) -> Result<(), std::io::Error> {
+    let sec = (now.now().unix_timestamp_nanos() / 1000_000_000) as i64;
+    let nano = (now.now().unix_timestamp_nanos() % 1000_000_000) as u32;
+    let ndt = NaiveDateTime::from_timestamp(sec, nano);
+    let dt = chrono::Local.from_utc_datetime(&ndt);
+    write!(
+        w,
+        "{} {} [{}] {}",
+        dt.format("%Y-%m-%dT%H:%M:%S.%3f%z"),
+        record.level(),
+        record.module_path().unwrap_or("<unnamed>"),
+        record.args()
+    )
+}
 
 pub(crate) fn main() -> shvapp::Result<()> {
     task::block_on(try_main())
@@ -127,7 +188,12 @@ async fn try_main() -> shvapp::Result<()> {
     // Parse command line arguments
     let cli = Cli::from_args();
 
-    let levels = setup_logging(&cli.verbosity).expect("failed to initialize logging.");
+    let topic_verbosity = TopicVerbosity::new(&cli.verbosity.unwrap_or("".into()));
+    let levels = topic_verbosity.levels.clone();
+    Logger::try_with_str("debug")?
+        .filter(Box::new(topic_verbosity))
+        .format(log_format)
+        .start()?;
     log::info!("=====================================================");
     log::info!("{} starting up!", std::module_path!());
     log::info!("=====================================================");
