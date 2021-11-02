@@ -13,7 +13,7 @@ use shvapp::client::{Client, ConnectionParams};
 use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, ProcessRequestResult};
 use shvapp::shvfsnode::FSDirRequestProcessor;
 
-use log::{warn, info, debug, LevelFilter};
+use log::{warn, info, debug};
 
 use async_std::{
     process::Command,
@@ -25,7 +25,7 @@ use async_std::{
     // future,
 };
 use chrono::{NaiveDateTime, TimeZone};
-use flexi_logger::{DeferredNow, Logger, Record};
+use flexi_logger::{DeferredNow, Level, Logger, Record};
 use flexi_logger::filter::{LogLineFilter, LogLineWriter};
 
 #[derive(StructOpt, Debug)]
@@ -50,84 +50,16 @@ struct Cli {
 }
 
 // const DEFAULT_RPC_TIMEOUT_MSEC: u64 = 5000;
-/*
-fn setup_logging(verbosity: &Option<String>) -> Result<Vec<(String, log::LevelFilter)>, std::error::Error> {
-    let mut ret: Vec<(String, log::LevelFilter)> = Vec::new();
-    let colors = ColoredLevelConfig::new()
-        // use builder methods
-        .error(Color::BrightRed)
-        .warn(Color::BrightMagenta)
-        .info(Color::Cyan)
-        .debug(Color::White)
-        .trace(Color::BrightBlack);
-
-    let mut base_config = fern::Dispatch::new();
-    base_config = match verbosity {
-        None => {
-            ret.push(("".into(), log::LevelFilter::Info));
-            base_config
-                .level(log::LevelFilter::Info)
-        }
-        Some(levels) => {
-            let mut default_level_set = false;
-            for level_str in levels.split(',') {
-                let parts: Vec<&str> = level_str.split(':').collect();
-                let (target, level_abbr) = if parts.len() == 1 {
-                    (parts[0], "T")
-                } else if parts.len() == 2 {
-                    (parts[0], parts[1])
-                } else {
-                    panic!("Cannot happen");
-                };
-                let level = match level_abbr {
-                    "D" => log::LevelFilter::Debug,
-                    "I" => log::LevelFilter::Info,
-                    "W" => log::LevelFilter::Warn,
-                    "E" => log::LevelFilter::Error,
-                    _ => log::LevelFilter::Trace,
-                };
-                ret.push((target.to_string(), level));
-                if target.is_empty() {
-                    base_config = base_config.level(level);
-                    default_level_set = true;
-                } else {
-                    base_config = base_config.level_for(target.to_string(), level);
-                }
-            }
-            if !default_level_set {
-                base_config = base_config.level(LevelFilter::Info);
-            }
-            base_config
-        }
-    };
-    base_config
-        //.chain(file_config)
-        .format(move |out, message, record| {
-            let level_color: fern::colors::Color = colors.get_color(&record.level());
-            let target = if record.module_path().unwrap_or("") == record.target() { "".to_string() } else { format!("({})", record.target().bright_white()) };
-            out.finish(format_args!(
-                "{}{}{}{} {}",
-                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S.%3f").to_string().green(),
-                format!("[{}:{}]", record.module_path().unwrap_or(""), record.line().unwrap_or(0)).yellow(),
-                &target,
-                format!("[{}]", &record.level().as_str()[..1]).color(level_color),
-                format!("{}", message).color(level_color)
-            ))
-        })
-        .chain(io::stderr())
-        .apply()?;
-    Ok(ret)
-}
-*/
 struct TopicVerbosity {
-    levels: HashMap<String, log::LevelFilter>
+    default_level: log::Level,
+    topic_levels: HashMap<String, log::Level>
 }
 impl TopicVerbosity {
     pub fn new(verbosity: &str) -> TopicVerbosity {
         let mut bc = TopicVerbosity {
-            levels: HashMap::new()
+            default_level: log::Level::Info,
+            topic_levels: HashMap::new()
         };
-        let mut default_level_set = false;
         for level_str in verbosity.split(',') {
             let parts: Vec<&str> = level_str.split(':').collect();
             let (target, level_abbr) = if parts.len() == 1 {
@@ -138,26 +70,38 @@ impl TopicVerbosity {
                 panic!("Cannot happen");
             };
             let level = match level_abbr {
-                "D" => log::LevelFilter::Debug,
-                "I" => log::LevelFilter::Info,
-                "W" => log::LevelFilter::Warn,
-                "E" => log::LevelFilter::Error,
-                _ => log::LevelFilter::Trace,
+                "D" => log::Level::Debug,
+                "I" => log::Level::Info,
+                "W" => log::Level::Warn,
+                "E" => log::Level::Error,
+                _ => log::Level::Trace,
             };
-            bc.levels.insert(target.into(),level);
             if target.is_empty() {
-                default_level_set = true;
+                bc.default_level = level;
+            } else {
+                bc.topic_levels.insert(target.into(), level);
             }
         }
-        if !default_level_set {
-            bc.levels.insert("".into(),LevelFilter::Info);
-        }
         bc
+    }
+    pub fn verbosity_to_string(&self) -> String {
+        let s1 = format!(":{}", self.default_level);
+        let s2 = self.topic_levels.iter()
+            .map(|(target, level)| format!("{}:{}", target, level))
+            .fold(String::new(), |acc, s| if acc.is_empty() { s } else { acc + "," + &s });
+        format!("{},{}", s1, s2)
     }
 }
 impl LogLineFilter for TopicVerbosity {
     fn write(&self, now: &mut DeferredNow, record: &log::Record, log_line_writer: &dyn LogLineWriter) -> std::io::Result<()> {
-        let level = self.levels.get(record.target()).unwrap_or(&log::LevelFilter::Info);
+        let level = if record.module_path().unwrap_or("") == record.target() {
+            &self.default_level
+        } else {
+            match self.topic_levels.get(record.target()) {
+                None => &self.default_level,
+                Some(level) => level,
+            }
+        };
         if &record.level() <= level {
             log_line_writer.write(now, record)?;
         }
@@ -170,12 +114,22 @@ pub fn log_format(w: &mut dyn std::io::Write, now: &mut DeferredNow, record: &Re
     let nano = (now.now().unix_timestamp_nanos() % 1000_000_000) as u32;
     let ndt = NaiveDateTime::from_timestamp(sec, nano);
     let dt = chrono::Local.from_utc_datetime(&ndt);
+    let level_abbr = match record.level() {
+        Level::Error => "E",
+        Level::Warn => "W",
+        Level::Info => "I",
+        Level::Debug => "D",
+        Level::Trace => "T"
+    };
+    let target = if record.module_path().unwrap_or("") == record.target() { "".to_string() } else { format!("({})", record.target()) };
     write!(
         w,
-        "{} {} [{}] {}",
+        "{}[{}:{}]{}|{}| {}",
         dt.format("%Y-%m-%dT%H:%M:%S.%3f%z"),
-        record.level(),
         record.module_path().unwrap_or("<unnamed>"),
+        record.line().unwrap_or(0),
+        target,
+        level_abbr,
         record.args()
     )
 }
@@ -189,7 +143,7 @@ async fn try_main() -> shvapp::Result<()> {
     let cli = Cli::from_args();
 
     let topic_verbosity = TopicVerbosity::new(&cli.verbosity.unwrap_or("".into()));
-    let levels = topic_verbosity.levels.clone();
+    let verbosity_string = topic_verbosity.verbosity_to_string();
     Logger::try_with_str("debug")?
         .filter(Box::new(topic_verbosity))
         .format(log_format)
@@ -197,9 +151,7 @@ async fn try_main() -> shvapp::Result<()> {
     log::info!("=====================================================");
     log::info!("{} starting up!", std::module_path!());
     log::info!("=====================================================");
-    log::info!("Verbosity levels: {}", levels.iter()
-        .map(|(target, level)| format!("{}:{}", target, level))
-        .fold(String::new(), |acc, s| if acc.is_empty() { s } else { acc + "," + &s }));
+    log::info!("Verbosity levels: {}", verbosity_string);
 
     let device_id = cli.device_id.unwrap_or("".into());
     // Get the remote address to connect to
