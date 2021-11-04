@@ -13,6 +13,9 @@ use shvapp::client::{Client, ConnectionParams};
 use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, ProcessRequestResult};
 use shvapp::shvfsnode::FSDirRequestProcessor;
 
+use time::format_description;
+use ansi_term::Color;
+
 use log::{warn, info, debug};
 
 use async_std::{
@@ -24,7 +27,7 @@ use async_std::{
     task,
     // future,
 };
-use chrono::{NaiveDateTime, TimeZone};
+// use chrono::{NaiveDateTime, TimeZone};
 use flexi_logger::{DeferredNow, Level, Logger, Record};
 use flexi_logger::filter::{LogLineFilter, LogLineWriter};
 
@@ -109,28 +112,38 @@ impl LogLineFilter for TopicVerbosity {
     }
 }
 
+const TS_S: &str = "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]\
+                    [offset_hour sign:mandatory]";//:[offset_minute]";
+lazy_static::lazy_static! {
+    static ref TS: Vec<format_description::FormatItem<'static>>
+        = format_description::parse(TS_S).unwrap(/*ok*/);
+}
+
 pub fn log_format(w: &mut dyn std::io::Write, now: &mut DeferredNow, record: &Record) -> Result<(), std::io::Error> {
-    let sec = (now.now().unix_timestamp_nanos() / 1000_000_000) as i64;
-    let nano = (now.now().unix_timestamp_nanos() % 1000_000_000) as u32;
-    let ndt = NaiveDateTime::from_timestamp(sec, nano);
-    let dt = chrono::Local.from_utc_datetime(&ndt);
-    let level_abbr = match record.level() {
-        Level::Error => "E",
-        Level::Warn => "W",
-        Level::Info => "I",
-        Level::Debug => "D",
-        Level::Trace => "T"
+    // let sec = (now.now().unix_timestamp_nanos() / 1000_000_000) as i64;
+    // let nano = (now.now().unix_timestamp_nanos() % 1000_000_000) as u32;
+    // let ndt = NaiveDateTime::from_timestamp(sec, nano);
+    // let dt = chrono::Local.from_utc_datetime(&ndt);
+    let args = match record.level() {
+        Level::Error => Color::Red.paint(format!("|E|{}", record.args())),
+        Level::Warn => Color::Purple.paint(format!("|W|{}", record.args())),
+        Level::Info => Color::Cyan.paint(format!("|I|{}", record.args())),
+        Level::Debug => Color::Yellow.paint(format!("|D|{}", record.args())),
+        Level::Trace => Color::White.dimmed().paint(format!("|T|{}", record.args())),
     };
     let target = if record.module_path().unwrap_or("") == record.target() { "".to_string() } else { format!("({})", record.target()) };
     write!(
         w,
-        "{}[{}:{}]{}|{}| {}",
-        dt.format("%Y-%m-%dT%H:%M:%S.%3f%z"),
-        record.module_path().unwrap_or("<unnamed>"),
-        record.line().unwrap_or(0),
-        target,
-        level_abbr,
-        record.args()
+        "{}{}{}{}",
+        //dt.format("%Y-%m-%dT%H:%M:%S.%3f%z"),
+        Color::Green.paint(
+        now.now()
+            .format(&TS)
+            .unwrap_or_else(|_| "Timestamping failed".to_string())
+        ),
+        Color::Yellow.paint(format!("[{}:{}]", record.module_path().unwrap_or("<unnamed>"), record.line().unwrap_or(0))),
+        Color::White.bold().paint(target),
+        args,
     )
 }
 
@@ -147,11 +160,18 @@ async fn try_main() -> shvapp::Result<()> {
     Logger::try_with_str("debug")?
         .filter(Box::new(topic_verbosity))
         .format(log_format)
+        .set_palette("b1;3;2;4;6".into())
         .start()?;
     log::info!("=====================================================");
     log::info!("{} starting up!", std::module_path!());
     log::info!("=====================================================");
     log::info!("Verbosity levels: {}", verbosity_string);
+
+    log::error!("error");
+    log::warn!("warn");
+    log::info!("info");
+    log::debug!("debug");
+    log::trace!("trace");
 
     let device_id = cli.device_id.unwrap_or("".into());
     // Get the remote address to connect to

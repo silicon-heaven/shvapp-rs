@@ -16,7 +16,7 @@ use async_std::{
     task,
     future,
 };
-use log::{debug, info, warn, error};
+use log::{trace, debug, info, warn, error};
 
 const DEFAULT_RPC_CALL_TIMEOUT_MS: u64 = 5000;
 
@@ -154,17 +154,17 @@ impl Client {
             return Err("Not request".into())
         }
         let rq_id = request.request_id().ok_or("Request ID missing")?;
-        debug!("sending RPC request id: {} msg: {}", rq_id, request);
+        trace!("sending RPC request id: {} msg: {}", rq_id, request);
         self.send_message(&request).await?;
         let mut client = self.clone();
         match future::timeout(Duration::from_millis(DEFAULT_RPC_CALL_TIMEOUT_MS), async move {
             loop {
                 let resp = client.receive_message().await?;
-                debug!(target: "rpcmsg", "{} maybe response: {}", rq_id, resp);
+                trace!(target: "rpcmsg", "{} maybe response: {}", rq_id, resp);
                 if let Some(id) = resp.request_id() {
                     if id == rq_id {
                         //let resp = resp.clone();
-                        debug!("{} .............. got response: {}", rq_id, resp);
+                        trace!("{} .............. got response: {}", rq_id, resp);
                         return Ok(resp)
                     }
                 }
