@@ -3,7 +3,7 @@ use chainpack::rpcvalue::List;
 use chainpack::{RpcValue, RpcMessage, RpcMessageMetaTags, metamethod};
 use crate::utils;
 use log::{debug};
-use crate::client::Client;
+use crate::client::{ClientSender};
 
 pub type ProcessRequestResult = crate::Result<Option<RpcValue>>;
 pub struct NodesTree {
@@ -15,7 +15,7 @@ impl NodesTree {
             root
         }
     }
-    pub fn process_request(&mut self, client: &Client, request: &RpcMessage) -> ProcessRequestResult  {
+    pub fn process_request(&mut self, client: &ClientSender, request: &RpcMessage) -> ProcessRequestResult  {
         if !request.is_request() {
             return Err("Not request".into());
         }
@@ -92,7 +92,7 @@ impl TreeNode {
         }
         return false;
     }
-    fn process_request(&mut self, client: &Client, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    fn process_request(&mut self, client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         //info!("################### process_request path: {} {}", shv_path, request.to_cpon());
         if shv_path.is_empty() {
             // if whole shv path was used
@@ -147,7 +147,7 @@ impl TreeNode {
 }
 
 pub trait RequestProcessor: Send {
-    fn process_request(&mut self, client: &Client, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
+    fn process_request(&mut self, client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
     fn is_dir(&self) -> bool;
 }
 

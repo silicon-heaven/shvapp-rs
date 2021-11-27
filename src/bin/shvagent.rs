@@ -9,7 +9,7 @@ use chainpack::rpcvalue::List;
 use chainpack::metamethod::{MetaMethod};
 
 use shvapp::{Connection, DEFAULT_PORT};
-use shvapp::client::{Client, ConnectionParams};
+use shvapp::client::{ClientSender, ConnectionParams};
 use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, ProcessRequestResult};
 use shvapp::shvfsnode::FSDirRequestProcessor;
 
@@ -236,7 +236,7 @@ async fn try_main() -> shvapp::Result<()> {
                         Ok(msg) => {
                             //info!(target: "rpcmsg", "<== Message arrived: {}", msg);
                             if msg.is_request() {
-                                let ret_val = shv_tree.process_request(&client,&msg);
+                                let ret_val = shv_tree.process_request(&client.to_sender(),&msg);
                                 if let Ok(None) = ret_val {
                                     // ret val will be sent async in handler
                                 }
@@ -284,7 +284,7 @@ struct DeviceNodeRequestProcessor {
 }
 
 impl RequestProcessor for DeviceNodeRequestProcessor {
-    fn process_request(&mut self, client: &Client, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    fn process_request(&mut self, client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
         if shv_path.is_empty() {
             if method == "dir" {

@@ -89,14 +89,14 @@ pub type ClientRx = async_broadcast::Receiver<Frame>;
 
 #[derive(Clone)]
 pub struct ClientSender {
-    pub(crate) sender: ClientTx,
+    pub sender: ClientTx,
     pub protocol: Protocol,
 }
 
 #[derive(Clone)]
 pub struct Client {
-    pub(crate) sender: ClientTx,
-    pub(crate) receiver: ClientRx,
+    pub sender: ClientTx,
+    pub receiver: ClientRx,
     pub protocol: Protocol,
 }
 
@@ -174,7 +174,7 @@ impl Client {
             Err(_) => Err(format!("Response to request id: {} didn't arrive within {} msec.", rq_id, DEFAULT_RPC_CALL_TIMEOUT_MS).into()),
         }
     }
-    pub async fn send_frame(& self, frame: Frame) -> crate::Result<()> {
+    async fn send_frame(& self, frame: Frame) -> crate::Result<()> {
         self.sender.send(frame).await?;
         Ok(())
     }
