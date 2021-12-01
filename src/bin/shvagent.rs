@@ -7,7 +7,7 @@ use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::rpcvalue::List;
 use chainpack::metamethod::{MetaMethod};
 
-use shvapp::{Connection, DEFAULT_PORT, shvlog};
+use shvapp::{Connection, DEFAULT_PORT};
 use shvapp::client::{ClientSender, ConnectionParams};
 use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, ProcessRequestResult};
 use shvapp::shvfsnode::FSDirRequestProcessor;
@@ -39,8 +39,10 @@ struct Cli {
     device_id: Option<String>,
     #[structopt(short = "-m", long = "--mount-point")]
     mount_point: Option<String>,
-    #[structopt(short = "-v", long = "--verbose", help = "Verbosity levels for targets, for example: rpcmsg:W or :T")]
-    verbosity: Option<String>,
+    #[structopt(short = "-v", long = "--verbose", help = "Log levels for targets, for example: rpcmsg:W or :T")]
+    verbosity: Vec<String>,
+    #[structopt(short, long, help = "Log levels for modules, for example: client:W or :T, default is :W if not specified")]
+    debug: Vec<String>,
     #[structopt(short = "-e", long = "--export-dir", help = "Directory, which will be exported as 'fs' subnode")]
     export_dir: Option<String>,
 }
@@ -54,19 +56,18 @@ async fn try_main() -> shvapp::Result<()> {
     // Parse command line arguments
     let cli = Cli::from_args();
 
-    let verbosity_string = &cli.verbosity.unwrap_or("".into());
-    shvlog::init(verbosity_string)?;
+    let (_log_handle, verbosity_string) = shvlog::init(&cli.debug, &cli.verbosity)?;
 
     log::info!("=====================================================");
     log::info!("{} starting up!", std::module_path!());
     log::info!("=====================================================");
     log::info!("Verbosity levels: {}", verbosity_string);
 
-    log::error!("error");
-    log::warn!("warn");
-    log::info!("info");
-    log::debug!("debug");
-    log::trace!("trace");
+    //log::error!("error");
+    //log::warn!("warn");
+    //log::info!("info");
+    //log::debug!("debug");
+    //log::trace!("trace");
 
     let device_id = cli.device_id.unwrap_or("".into());
     // Get the remote address to connect to
@@ -115,17 +116,9 @@ async fn try_main() -> shvapp::Result<()> {
         });
         match client.login(&connection_params).await {
             Ok(_) => {
-                /*
-                let ping_fut = client.call(RpcMessage::create_request(".broker/app", "ping", None));
-                match ping_fut.await {
-                    Ok(resp) => {
-                        info!("Ping response: {}", resp);
-                    }
-                    Err(e) => {
-                        info!("Ping error: {}", e);
-                    }
+                if let Some(heartbeat_interval) = connection_params.heartbeat_interval {
+                    client.spawn_ping_task(heartbeat_interval);
                 }
-                */
                 loop {
                     match client.receive_message().await {
                         Ok(msg) => {
@@ -179,7 +172,7 @@ struct DeviceNodeRequestProcessor {
 }
 
 impl RequestProcessor for DeviceNodeRequestProcessor {
-    fn process_request(&mut self, client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    fn process_request(&mut self, client_sender: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
         if shv_path.is_empty() {
             if method == "dir" {
@@ -205,7 +198,7 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
             if method == "runCmd" {
                 let request = request.clone();
                 // let shv_path = shv_path.to_string();
-                let client = client.clone();
+                let client_sender = client_sender.clone();
                 task::spawn(async move {
                     async fn run_cmd(request: &RpcMessage) -> shvapp::Result<RpcValue> {
                         let params = request.params().ok_or("No params")?;
@@ -234,7 +227,7 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
                                 Ok(rv) => { resp_msg.set_result(rv); }
                                 Err(e) => { resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string())); }
                             }
-                            match client.send_message(&resp_msg).await {
+                            match client_sender.send_message(&resp_msg).await {
                                 Ok(_) => {}
                                 Err(e) => { warn!("Send response error: {}.", e); }
                             }

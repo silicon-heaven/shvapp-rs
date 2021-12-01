@@ -37,20 +37,21 @@ impl Connection {
         // this is why capacity must be >= 2
         const TO_CLIENT_CHANNEL_CAPACITY: usize = 2;
         const FROM_CLIENT_CHANNEL_CAPACITY: usize = 256;
-        let from_client_channel = async_std::channel::bounded(FROM_CLIENT_CHANNEL_CAPACITY);
-        let to_client_channel = broadcast(TO_CLIENT_CHANNEL_CAPACITY);
+        let (from_client_sender, from_client_receiver) = async_std::channel::bounded(FROM_CLIENT_CHANNEL_CAPACITY);
+        let (mut to_client_sender, to_client_receiver) = broadcast(TO_CLIENT_CHANNEL_CAPACITY);
+        to_client_sender.set_overflow(true);
         (
             Connection {
                 stream,
                 buffer: BytesMut::with_capacity(4 * 1024),
-                from_client: from_client_channel.1,
-                to_client: to_client_channel.0,
+                from_client: from_client_receiver,
+                to_client: to_client_sender,
                 // unfortunately, async-std channel is dispatch not broadcast
-                // we have to use broadcast channel from postage crate
+                // we have to use broadcast channel from async-broadcast crate
             },
             Client {
-                sender: from_client_channel.0,
-                receiver: to_client_channel.1,
+                sender: from_client_sender,
+                receiver: to_client_receiver,
                 protocol
             }
         )
@@ -72,6 +73,9 @@ impl Connection {
                                 Ok(frame) => match frame {
                                     Some(frame) => {
                                         debug!("{} sender is full: {}, Sending frame to clients ............: {}", frame_cnt, self.to_client.is_full(), &frame);
+                                        //if self.to_client.is_full() {
+                                        //    error!("sender is full, capacity: {}", self.to_client.capacity());
+                                        //}
                                         self.to_client.broadcast(frame).await?;
                                         debug!("{} ............ SENT", frame_cnt);
                                         frame_cnt += 1;
@@ -94,7 +98,7 @@ impl Connection {
                 },
                 frame = self.from_client.recv().fuse() => match frame {
                     Ok(frame) => {
-                        debug!(target: "rpcmsg", "Frame to send from client: {}", &frame);
+                        debug!("Frame to send from client: {}", &frame);
                         self.send_frame(&frame).await?;
                     }
                     Err(e) => {

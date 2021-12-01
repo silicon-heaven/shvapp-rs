@@ -7,7 +7,7 @@ use crate::{Frame};
 
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue};
 use crate::frame::Protocol;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use async_std::{
     channel::{Sender},
     // io::{stdin, BufReader, BufWriter},
@@ -43,7 +43,7 @@ pub struct ConnectionParams {
     pub password_type: PasswordType,
     pub device_id: String,
     pub mount_point: String,
-    pub idle_watchdog_timeout: i32,
+    pub heartbeat_interval: Option<Duration>,
     pub protocol: Protocol,
 }
 impl ConnectionParams {
@@ -56,7 +56,7 @@ impl ConnectionParams {
             password_type: if user.len() == 40 { PasswordType::SHA1} else { PasswordType::PLAIN },
             device_id: "".into(),
             mount_point: "".into(),
-            idle_watchdog_timeout: 180,
+            heartbeat_interval: Some(Duration::from_secs(60)),
             protocol: Protocol::ChainPack,
         }
     }
@@ -68,7 +68,9 @@ impl ConnectionParams {
         login.insert("type".into(), RpcValue::new(self.password_type.to_str()));
         map.insert("login".into(), RpcValue::new(login));
         let mut options = chainpack::rpcvalue::Map::new();
-        options.insert("idleWatchDogTimeOut".into(), RpcValue::new(self.idle_watchdog_timeout));
+        if let Some(hbi) = self.heartbeat_interval {
+            options.insert("idleWatchDogTimeOut".into(), RpcValue::new(hbi.as_secs() * 3));
+        }
         let mut device = chainpack::rpcvalue::Map::new();
         if !self.device_id.is_empty() {
             device.insert("deviceId".into(), RpcValue::new(&self.device_id));
@@ -122,31 +124,43 @@ impl Client {
         debug!("login result: {}", login_resp);
         match login_resp.result() {
             Some(_) => {
-                let heartbeat_interval = login_params.idle_watchdog_timeout as u64 / 3;
-                if heartbeat_interval >= 60 {
-                    let client_sender = self.to_sender();
-                    task::spawn(async move {
-                        info!("Starting heart-beat task with period: {} sec", heartbeat_interval);
-                        loop {
-                            task::sleep(Duration::from_secs(heartbeat_interval)).await;
-                            debug!("Sending heart beat");
-                            let res = client_sender.send_message(&RpcMessage::create_request(".broker/app", "ping", None)).await;
-                            /*
-                            // until I solve problem how to read Rx end of Client clone while waiting
-                            // for heart beat timer expiration, I'll send just ping requests without waiting for response
-                            let res = client.call_rpc_method(RpcMessage::create_request(".broker/app", "ping", None)).await;
-                            */
-                            match res {
-                                Ok(_) => {}
-                                Err(e) => error!("cannot send ping: {}", e),
-                            }
-                        }
-                    });
-                }
                 Ok(())
             },
             None => Err("Login incorrect!".into())
         }
+    }
+
+    pub fn spawn_ping_task(&self, heartbeat_interval: Duration) {
+        let mut client = self.clone();
+        task::spawn(async move {
+            info!("Starting heart-beat task with period: {} sec", heartbeat_interval.as_secs());
+            loop {
+                task::sleep(heartbeat_interval).await;
+                let ping_start = Instant::now();
+                let rq = RpcMessage::create_request(".broker/app", "ping", None);
+                debug!("Sending heart beat: {}", rq);
+                match client.send_message(&rq).await {
+                    Ok(_) => {}
+                    Err(e) => error!("cannot send ping: {}", e),
+                }
+                loop {
+                    match client.receive_message_timeout(heartbeat_interval * 2).await {
+                        Ok(resp) => {
+                            trace!("ping task response received: {}", resp);
+                            if resp.is_response() && resp.request_id() == rq.request_id() {
+                                debug!("Ping response received OK");
+                                break;
+                            }
+                            if ping_start.elapsed() > heartbeat_interval {
+                                error!("Receive ping response timeout after: {:?}", ping_start.elapsed());
+                                break;
+                            }
+                        }
+                        Err(_) => error!("Receive ping response timeout after: {:?}", ping_start.elapsed()),
+                    }
+                }
+            }
+        });
     }
 
     pub async fn call_rpc_method(& self, request: RpcMessage) -> crate::Result<RpcMessage> {
