@@ -23,6 +23,7 @@ use async_std::{
     task,
     // future,
 };
+use shvlog::LogConfig;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
@@ -56,7 +57,9 @@ async fn try_main() -> shvapp::Result<()> {
     // Parse command line arguments
     let cli = Cli::from_args();
 
-    let (_log_handle, verbosity_string) = shvlog::init(&cli.debug, &cli.verbosity)?;
+    let log_config = LogConfig::new(&cli.debug, &cli.verbosity);
+    let verbosity_string = log_config.verbosity_string();
+    let _log_handle = shvlog::init(log_config)?;
 
     log::info!("=====================================================");
     log::info!("{} starting up!", std::module_path!());
