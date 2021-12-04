@@ -1,4 +1,4 @@
-use crate::frame::{Frame, Protocol};
+use chainpack::rpcframe::{RpcFrame, Protocol};
 use crate::client::{Client};
 use bytes::{Buf, BytesMut};
 use chainpack::{ChainPackWriter, Writer, CponWriter};
@@ -23,9 +23,9 @@ pub struct Connection {
     stream: TcpStream,
     // The buffer for reading frames.
     buffer: BytesMut,
-    from_client: Receiver<Frame>,
+    from_client: Receiver<RpcFrame>,
     // to_client: (Sender<Frame>, Receiver<Frame>),
-    to_client: async_broadcast::Sender<Frame>,
+    to_client: async_broadcast::Sender<RpcFrame>,
 }
 
 impl Connection {
@@ -108,9 +108,9 @@ impl Connection {
             }
         }
     }
-    fn receive_frame(&mut self) -> crate::Result<Option<Frame>> {
+    fn receive_frame(&mut self) -> crate::Result<Option<RpcFrame>> {
         let buff = &self.buffer[..];
-        match Frame::parse(buff) {
+        match RpcFrame::parse(buff) {
             Ok(maybe_frame) => {
                 match maybe_frame {
                     None => { return Ok(None); }
@@ -125,7 +125,7 @@ impl Connection {
         }
     }
 
-    async fn send_frame(&mut self, frame: &Frame) -> crate::Result<()> {
+    async fn send_frame(&mut self, frame: &RpcFrame) -> crate::Result<()> {
         Connection::log_frame(&frame, LogFramePrompt::Send);
         let mut meta_data = Vec::new();
         match &frame.protocol {
@@ -153,7 +153,7 @@ impl Connection {
         Ok(())
     }
 
-    fn log_frame(frame: &Frame, prompt: LogFramePrompt) {
+    fn log_frame(frame: &RpcFrame, prompt: LogFramePrompt) {
         let prompt_str = match prompt { LogFramePrompt::Send => "<===", LogFramePrompt::Receive => "===>" };
         if frame.data.len() < 1024 {
             match frame.to_rpcmesage() {

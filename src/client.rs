@@ -3,10 +3,10 @@
 //! Provides an async connect and methods for issuing the supported commands.
 
 // use crate::cmd::{Get, Publish, Set, Subscribe, Unsubscribe};
-use crate::{Frame};
+use crate::{RpcFrame};
 
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue};
-use crate::frame::Protocol;
+use chainpack::rpcframe::Protocol;
 use std::time::{Duration, Instant};
 use async_std::{
     channel::{Sender},
@@ -86,8 +86,8 @@ impl ConnectionParams {
     }
 }
 
-pub type ClientTx = Sender<Frame>;
-pub type ClientRx = async_broadcast::Receiver<Frame>;
+pub type ClientTx = Sender<RpcFrame>;
+pub type ClientRx = async_broadcast::Receiver<RpcFrame>;
 
 #[derive(Clone)]
 pub struct ClientSender {
@@ -188,16 +188,16 @@ impl Client {
             Err(_) => Err(format!("Response to request id: {} didn't arrive within {} msec.", rq_id, DEFAULT_RPC_CALL_TIMEOUT_MS).into()),
         }
     }
-    async fn send_frame(& self, frame: Frame) -> crate::Result<()> {
+    async fn send_frame(& self, frame: RpcFrame) -> crate::Result<()> {
         self.sender.send(frame).await?;
         Ok(())
     }
-    pub async fn receive_frame(&mut self) -> crate::Result<Frame> {
+    pub async fn receive_frame(&mut self) -> crate::Result<RpcFrame> {
         let frame = self.receiver.recv().await?;
         Ok(frame)
     }
     pub async fn send_message(& self, msg: &RpcMessage) -> crate::Result<()> {
-        let frame = Frame::from_rpcmessage(self.protocol, &msg);
+        let frame = RpcFrame::from_rpcmessage(self.protocol, &msg)?;
         self.send_frame(frame).await?;
         Ok(())
     }
@@ -219,12 +219,12 @@ impl Client {
 }
 
 impl ClientSender {
-    pub async fn send_frame(& self, frame: Frame) -> crate::Result<()> {
+    pub async fn send_frame(& self, frame: RpcFrame) -> crate::Result<()> {
         self.sender.send(frame).await?;
         Ok(())
     }
     pub async fn send_message(& self, msg: &RpcMessage) -> crate::Result<()> {
-        let frame = Frame::from_rpcmessage(self.protocol, &msg);
+        let frame = RpcFrame::from_rpcmessage(self.protocol, &msg)?;
         self.send_frame(frame).await?;
         Ok(())
     }

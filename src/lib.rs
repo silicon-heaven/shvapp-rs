@@ -1,9 +1,7 @@
-mod connection;
+pub use chainpack::rpcframe::RpcFrame;
 pub use connection::Connection;
 
-pub mod frame;
-pub use frame::Frame;
-
+mod connection;
 pub mod client;
 
 pub mod utils;
