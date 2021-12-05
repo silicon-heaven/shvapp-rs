@@ -1,5 +1,6 @@
 use structopt::StructOpt;
 use std::{env};
+use std::path::PathBuf;
 use std::time::Duration;
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue, metamethod};
 
@@ -7,7 +8,7 @@ use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::rpcvalue::List;
 use chainpack::metamethod::{MetaMethod};
 
-use shvapp::{Connection, DEFAULT_PORT};
+use shvapp::{Connection, DEFAULT_PORT, shvjournal};
 use shvapp::client::{ClientSender, ConnectionParams};
 use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, ProcessRequestResult};
 use shvapp::shvfsnode::FSDirRequestProcessor;
@@ -66,6 +67,17 @@ async fn try_main() -> shvapp::Result<()> {
     let log_config = LogConfig::new(&cli.debug, &cli.verbosity);
     let verbosity_string = log_config.verbosity_string();
     let _log_handle = shvlog::init(log_config)?;
+    /*
+    if let Some(journal_dir) = cli.journal_dir {
+        let options = shvjournal::Options {
+            journal_dir: journal_dir.into(),
+            dir_size_limit: 0,
+            file_size_limit: 0,
+        };
+        let _journal = shvjournal::Journal::new(options);
+    }
+    */
+    //let millis = shvjournal::Journal::find_last_entry_milis(&PathBuf::from("shvapp/tests/oneline.log2"), 123).unwrap();
 
     log::info!("=====================================================");
     log::info!("{} starting up!", std::module_path!());

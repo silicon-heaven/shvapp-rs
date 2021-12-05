@@ -7,6 +7,7 @@ pub mod client;
 pub mod utils;
 pub mod shvnode;
 pub mod shvfsnode;
+pub mod shvjournal;
 
 /// Default port that a redis server listens on.
 ///
