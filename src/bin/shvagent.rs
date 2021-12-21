@@ -77,7 +77,7 @@ async fn try_main() -> shvapp::Result<()> {
         let _journal = shvjournal::Journal::new(options);
     }
     */
-    //let millis = shvjournal::Journal::find_last_entry_milis(&PathBuf::from("shvapp/tests/oneline.log2"), 123).unwrap();
+    shvjournal::Journal::test();
 
     log::info!("=====================================================");
     log::info!("{} starting up!", std::module_path!());
