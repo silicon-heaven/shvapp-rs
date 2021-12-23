@@ -1,17 +1,16 @@
 use std::{cmp, fs};
-use std::cmp::min;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::collections::Bound::{Included, Unbounded};
+use std::cmp::{max, min};
+use std::collections::{BTreeMap};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek};
-use std::num::ParseIntError;
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
 //use std::str::pattern::Pattern;
 use bitflags::bitflags;
 use regex::Regex;
 use log::log;
-use chainpack::{DateTime, RpcValue, MetaMap, Map, List, ReadResult};
+use chainpack::{DateTime, RpcValue, MetaMap, Map, List};
+use chainpack::rpcvalue::IMap;
 
 macro_rules! logShvJournalD {
     ($($arg:tt)+) => (
@@ -22,15 +21,6 @@ macro_rules! logShvJournalD {
 pub const DEFAULT_GET_LOG_RECORD_COUNT_LIMIT: usize = 100 * 1000;
 pub const MAX_GET_LOG_RECORD_COUNT_LIMIT: usize = 1000 * 1000;
 pub const DOMAIN_VAL_CHANGE: &str = "chng";
-
-pub struct Options {
-    pub journal_dir: PathBuf,
-    pub file_size_limit: usize,
-    pub dir_size_limit: usize,
-}
-
-impl Options {
-}
 
 bitflags! {
     struct EntryValueFlags: u8 {
@@ -85,7 +75,7 @@ pub struct LogHeader {
     record_count_limit: usize,
     record_count_limit_hit: bool,
     with_snapshot: bool,
-    path_dict: Option<Map>,
+    path_dict: Option<BTreeMap<String, i32>>,
     fields: List,
 }
 impl LogHeader {
@@ -110,14 +100,25 @@ impl LogHeader {
         mm.insert("withSnapshot", self.with_snapshot.into());
         mm.insert("withPathsDict", self.path_dict.is_some().into());
         if let Some(path_dict) = self.path_dict {
-            mm.insert("pathsDict", path_dict.into());
+            let mut pd = IMap::new();
+            for (path, key) in path_dict {
+                pd.insert(key,path.into());
+            }
+            mm.insert("pathsDict", pd.into());
         }
         mm.insert("fields", self.fields.into());
         mm
     }
 }
 
+pub struct Options {
+    pub journal_dir: String,
+    pub file_size_limit: usize,
+    pub dir_size_limit: usize,
+}
+
 struct JournalState {
+    journal_dir: Option<PathBuf>,
     files: Vec<i64>,
     journal_dir_size: Option<usize>,
     last_file_size: usize,
@@ -125,20 +126,14 @@ struct JournalState {
 }
 
 pub struct Journal {
-    options: Options,
+    pub options: Options,
     state: JournalState,
 }
 impl JournalState {
-    fn new() -> Self {
-        JournalState {
-            files: Vec::new(),
-            journal_dir_size: None,
-            last_file_size: 0,
-            recent_epoch_msec: None,
-        }
-    }
     fn is_consistent(&self) -> bool {
-        self.journal_dir_size.is_some()
+        self.journal_dir.is_some()
+            && self.journal_dir_size.is_some()
+            && self.recent_epoch_msec.is_some()
     }
 }
 impl Journal {
@@ -149,51 +144,123 @@ impl Journal {
             state: JournalState::new(),
         })
     }
-    pub fn append(&self, entry: &Entry) {
-        match self.try_append(entry) {
-            Ok(_) => {},
-            Err(err) => {
-
+    pub fn append(&mut self, entry: &Entry) -> crate::Result<()> {
+        match self.try_append(entry, false) {
+            Ok(_) => {Ok(())},
+            Err(_) => {
+                self.try_append(entry, true)
             }
         }
     }
-    pub fn getLog(&self, params: &GetLogParams) -> crate::Result<RpcValue> {
+    fn try_append(&mut self, entry: &Entry, force_create_state: bool) -> crate::Result<()> {
+        if force_create_state || !self.state.is_consistent() {
+            self.create_journal_state()?;
+        }
+        if !self.state.is_consistent() {
+            return Err("Inconsistent journal state".into());
+        }
+        let epoch_msec = max(entry.datetime.epoch_msec(), self.state.recent_epoch_msec.unwrap_or(0));
+        if self.state.files.empty() || self.state.last_file_size > self.options.file_size_limit {
+            // create new file
+            self.create_new_log_file(epoch_msec)?;
+        }
+        let last_file_epoch_msec = self.state.files.last().unwrap();
+        let last_file_name = Self::epoch_msec_to_filename(last_file_epoch_msec)?;
+        let mut f = File::open(last_file_name)?;
+
+        let mut line_size: usize = 0;
+        let write_file = |data: &[u8], is_last_field: bool| -> crate::Result<()> {
+            f.write_all(data)?;
+            line_size += data.len();
+            let tab: [u8; 1] = ['\t' as u8];
+            let lf: [u8; 1] = ['\n' as u8];
+            f.write_all(if is_last_field { &lf } else { &tab })?;
+            line_size += 1;
+            Ok(())
+        };
+        let b = DateTime::from_epoch_msec(epoch_msec).to_cpon_string().as_bytes();
+        write_file(b, false)?;
+        let b: [u8; 1] = [0]; // uptime skipped
+        write_file(&b, false)?;
+        write_file(entry.path.as_bytes(), false)?;
+        let b = entry.value.to_cpon().as_bytes();
+        write_file(b, false)?;
+        if let Some(time) = entry.short_time {
+            let b = time.to_string().as_bytes();
+            write_file(b, false)?;
+        } else {
+            let b: [u8; 0] = []; // no short time
+            write_file(&b, false)?;
+        }
+        write_file(entry.domain.as_bytes(), false)?;
+        let b = entry.value_flags.bits.to_string().as_bytes();
+        write_file(b, false)?;
+        write_file(entry.user_id.as_bytes(), true)?;
+        f.flush();
+        self.state.recent_epoch_msec = Some(epoch_msec);
+        self.state.last_file_size += line_size;
+        self.state.journal_dir_size += line_size;
+        //if(m_journalContext.journalSize > m_journalSizeLimit) {
+        //    rotateJournal();
+        //}
+    }
+    fn create_new_log_file(&mut self, millis: i64) -> crate::Result<RpcValue> {
+
+    }
+    pub fn get_log(&self, params: &GetLogParams) -> crate::Result<RpcValue> {
         logShvJournalD!("========================= getLog ==================");
         logShvJournalD!("params: {:?}", params);
 
-        struct SnapshotContext {
-            snapshot: BTreeMap<String, Entry>,
-            last_entry_datetime: Option<DateTime>,
-        };
-        let mut snapshot_ctx = SnapshotContext {
-            snapshot: BTreeMap::new(),
-            last_entry_datetime: None,
-        };
-
-        let mut log = List::new();
-        let mut path_dict = Map::new();
-        let mut first_file_datetime: Option<DateTime> = None;
-        let mut last_entry_datetime: Option<DateTime> = None;
-        let mut is_snapshot_written = false;
         let record_count_limit = match params.record_count_limit {
             None => {DEFAULT_GET_LOG_RECORD_COUNT_LIMIT}
             Some(n) => {n}
         };
         let record_count_limit = min(record_count_limit, MAX_GET_LOG_RECORD_COUNT_LIMIT);
-        let mut record_count_limit_hit = false;
-
-        /// this ensure that there be only one copy of each path in memory
-        let mut max_path_id = 0u32;
-        let mut make_path_shared = |path: &str| -> RpcValue {
-            match path_dict.get(path) {
-                None => {
-                    max_path_id += 1;
-                    path_dict.insert(path.into(), max_path_id.into());
-                    RpcValue::from(max_path_id)
-                }
-                Some(n) => {n.clone()}
-            }
+        struct SnapshotContext<'a> {
+            params: &'a GetLogParams,
+            snapshot: BTreeMap<String, Entry>,
+            is_snapshot_written: bool,
+            last_entry_datetime: Option<DateTime>,
+            record_count_limit: usize,
+        }
+        struct LogContext<'a> {
+            params: &'a GetLogParams,
+            log: List,
+            first_file_datetime: Option<DateTime>,
+            last_entry_datetime: Option<DateTime>,
+            record_count_limit: usize,
+            record_count_limit_hit: bool,
+            path_dict: BTreeMap<String, i32>,
+            max_path_id: i32,
+        }
+        let mut snapshot_context = SnapshotContext {
+            params,
+            snapshot: BTreeMap::new(),
+            is_snapshot_written: false,
+            last_entry_datetime: None,
+            record_count_limit,
         };
+        let mut log_context = LogContext {
+            params,
+            log: List::new(),
+            first_file_datetime: None,
+            last_entry_datetime: None,
+            record_count_limit,
+            record_count_limit_hit: false,
+            path_dict: BTreeMap::new(),
+            max_path_id: 0,
+        };
+        /// this ensure that there be only one copy of each path in memory
+        fn make_path_shared(log_ctx: &mut LogContext, path: &str) -> i32 {
+            match log_ctx.path_dict.get(path) {
+                None => {
+                    log_ctx.max_path_id += 1;
+                    log_ctx.path_dict.insert(path.into(), log_ctx.max_path_id);
+                    log_ctx.max_path_id
+                }
+                Some(n) => {*n}
+            }
+        }
         fn add_to_snapshot(snapshot_ctx: &mut SnapshotContext, entry: Entry) {
             if &entry.domain != DOMAIN_VAL_CHANGE {
                 //shvDebug() << "remove not CHNG from snapshot:" << RpcValue(entry.toRpcValueMap()).toCpon();
@@ -204,7 +271,7 @@ impl Journal {
                 let mut drop_keys: Vec<String> = vec![];
                 let entry_path = entry.path.clone();
                 let range = snapshot_ctx.snapshot.range(entry_path..);
-                for (path, e) in range {
+                for (path, _) in range {
                     if path_starts_with(path, &entry.path) {
                         // it.key starts with key, then delete it from snapshot
                         drop_keys.push(path.into());
@@ -226,53 +293,58 @@ impl Journal {
                 //snapshot_ctx.last_entry_datetime = Some(*&entry.datetime);
                 snapshot_ctx.snapshot.insert((&entry.path).clone(), entry);
             }
-        };
-        let mut append_log_entry = |entry: &Entry| {
-            if log.len() >= record_count_limit {
-                record_count_limit_hit = true;
+        }
+        fn append_log_entry(log_ctx: &mut LogContext, entry: &Entry) -> bool {
+            if log_ctx.log.len() >= log_ctx.record_count_limit {
+                log_ctx.record_count_limit_hit = true;
                 return false;
             }
             let mut rec = List::new();
             rec.push(entry.datetime.into());
-            rec.push(make_path_shared(&entry.path));
+            let path: RpcValue = if log_ctx.params.with_path_dict {
+                make_path_shared(log_ctx, &entry.path).into()
+            } else {
+                RpcValue::from(&entry.path)
+            };
+            rec.push(path);
             rec.push(entry.value.clone());
             rec.push(match entry.short_time {None => RpcValue::from(()), Some(n) => RpcValue::from(n)});
             rec.push(if entry.domain.is_empty() { RpcValue::from(DOMAIN_VAL_CHANGE) } else { RpcValue::from(&entry.domain) });
             rec.push((entry.value_flags.bits() as i32).into());
             rec.push(if entry.user_id.is_empty() { RpcValue::from(()) } else { RpcValue::from(&entry.user_id) });
-            log.push(RpcValue::from(rec));
-            last_entry_datetime = Some(entry.datetime);
+            log_ctx.log.push(RpcValue::from(rec));
+            log_ctx.last_entry_datetime = Some(entry.datetime);
             return true;
-        };
-        let write_snapshot = || -> crate::Result<bool> {
+        }
+        fn write_snapshot(snapshot_ctx: &mut SnapshotContext, log_ctx: &mut LogContext) -> crate::Result<bool> {
             //shvWarning() << "write_snapshot, snapshot size:" << snapshot_ctx.snapshot.size();
-            logShvJournalD!("\t writing snapshot, record count: {}", &snapshot_ctx.snapshot.len());
+            logShvJournalD!("\t writing snapshot, record count: {}", snapshot_ctx.snapshot.len());
             if snapshot_ctx.snapshot.is_empty() {
                 return Ok(true);
             }
             //snapshot_ctx.is_snapshot_written = true;
-            let snapshot_dt = if params.is_since_last_entry {
+            let snapshot_dt = if snapshot_ctx.params.is_since_last_entry {
                 snapshot_ctx.last_entry_datetime
             } else {
-                params.since
+                snapshot_ctx.params.since
             };
             let snapshot_dt = match snapshot_dt {
                 None => { return Err("Cannot create snapshot datetime.".into()) }
                 Some(dt) => { dt }
             };
-            for (path, e) in &snapshot_ctx.snapshot {
+            for (_, e) in &snapshot_ctx.snapshot {
                 let mut entry = e.clone();
                 entry.datetime = snapshot_dt;
                 entry.value_flags.set(EntryValueFlags::SNAPSHOT, true);
                 // erase EVENT flag in the snapshot values,
                 // they can trigger events during reply otherwise
                 entry.value_flags.set(EntryValueFlags::SPONTANEOUS, false);
-                if !append_log_entry(&entry) {
+                if !append_log_entry(log_ctx, &entry) {
                     return Ok(false);
                 }
             }
             return Ok(true);
-        };
+        }
         if !self.state.files.is_empty () {
             //std::vector<int64_t>::const_iterator first_file_it = journal_context.files.begin();
             //journal_start_msec = *first_file_it;
@@ -283,7 +355,7 @@ impl Journal {
                     logShvJournalD!("since: {:?}", &params.since);
                     first_file_ix = match self.state.files.binary_search(&params_since_msec) {
                         Ok(i) => {
-                            /// take exactly this file
+                            // take exactly this file
                             logShvJournalD!("\texact match: {} {}", &i, &self.state.files[i]);
                             i
                         }
@@ -294,7 +366,7 @@ impl Journal {
                         }
                     };
                     let first_file_millis = self.state.files[first_file_ix];
-                    first_file_datetime = Some(DateTime::from_epoch_msec(first_file_millis));
+                    log_context.first_file_datetime = Some(DateTime::from_epoch_msec(first_file_millis));
                 }
             }
             let path_pattern_regex = match &params.path_pattern {
@@ -337,20 +409,20 @@ impl Journal {
                     let after_until = params.until.is_some() && params.until.unwrap() < entry.datetime;
                     if before_since {
                         //logShvJournalD!("\t SNAPSHOT entry: {}", entry);
-                        add_to_snapshot(&mut snapshot_ctx, entry);
+                        add_to_snapshot(&mut snapshot_context, entry);
                     }
                     else if after_until {
                         break 'scan_files;
                     }
                     else {
-                        if !is_snapshot_written {
-                            is_snapshot_written = true;
-                            if !write_snapshot()? {
+                        if !snapshot_context.is_snapshot_written {
+                            snapshot_context.is_snapshot_written = true;
+                            if !write_snapshot(&mut snapshot_context, &mut log_context)? {
                                 break 'scan_files;
                             }
                         }
                         //logShvJournalD!("\t LOG entry: {}", &entry);
-                        if !append_log_entry(&entry) {
+                        if !append_log_entry(&mut log_context, &entry) {
                             break 'scan_files;
                         }
                     }
@@ -360,29 +432,28 @@ impl Journal {
         // snapshot should be written already
         // this is only case, when log is empty and
         // only snapshot shall be returned
-        if !is_snapshot_written {
-            is_snapshot_written = true;
-            write_snapshot()?;
+        if !snapshot_context.is_snapshot_written {
+            snapshot_context.is_snapshot_written = true;
+            write_snapshot(&mut snapshot_context,&mut log_context)?;
         }
         // if since is not specified in params
         // then use TS of first file used
         let log_since = if params.is_since_last_entry {
-            snapshot_ctx.last_entry_datetime
+            log_context.last_entry_datetime
         } else if let Some(dt) = params.since {
             params.since
-        } else if let Some(dt) = first_file_datetime {
-            first_file_datetime
+        } else if let Some(dt) = log_context.first_file_datetime {
+            log_context.first_file_datetime
         } else {
             None
         };
-        let log_until = if record_count_limit_hit {
-            last_entry_datetime
+        let log_until = if log_context.record_count_limit_hit {
+            log_context.last_entry_datetime
         } else if let Some(dt) = params.until {
             Some(dt)
         } else {
-            last_entry_datetime
+            log_context.last_entry_datetime
         };
-        let mut ret = RpcValue::new(log);
         let log_header = LogHeader {
             log_version: 2,
             device_id: "".into(),
@@ -391,49 +462,51 @@ impl Journal {
             log_params: params.clone(),
             since: log_since,
             until: log_until,
-            record_count: log.len(),
+            record_count: log_context.log.len(),
             record_count_limit,
-            record_count_limit_hit,
-            with_snapshot: is_snapshot_written,
-            path_dict: if params.with_path_dict { Some(path_dict) } else { None },
+            record_count_limit_hit: log_context.record_count_limit_hit,
+            with_snapshot: snapshot_context.is_snapshot_written,
+            path_dict: if params.with_path_dict { Some(log_context.path_dict) } else { None },
             fields: vec!["timestamp".into(), "path".into(), "value".into(), "shortTime".into(), "domain".into(), "valueFlags".into(), "userId".into()],
         };
+        let mut ret = RpcValue::new(log_context.log);
         ret.set_meta(log_header.to_meta_map());
         //logIShvJournal() << "result record cnt:" << log.size();
         Ok(ret)
     }
-    fn try_append(&self, entry: &Entry) -> crate::Result<()> {
-        panic!("NIY")
-    }
-    fn check_journal_dir(&self) -> crate::Result<()> {
+
+    fn create_journal_state(&mut self) -> crate::Result<()> {
+        self.state = JournalState {
+            journal_dir: None,
+            files: Vec::new(),
+            journal_dir_size: None,
+            last_file_size: 0,
+            recent_epoch_msec: None,
+        };
         fs::create_dir_all(&self.options.journal_dir)?;
-        Ok(())
-    }
-    fn check_journal_state(&mut self) -> crate::Result<()> {
-        if self.state.is_consistent() {
-            return Ok(());
-        }
-        self.state = JournalState::new();
-        self.check_journal_dir()?;
-        if self.options.journal_dir.is_dir() {
-            let mut journal_dir_size = 0usize;
-            for entry in fs::read_dir(&self.options.journal_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if !path.is_dir() {
-                    let filename = path.file_name().ok_or("Cannot convert Path to OsStr")?;
-                    let filename = filename.to_str().ok_or("Cannot convert OsStr to &str")?;
-                    let millis = Self::filename_to_epoch_msec(filename)?;
-                    self.state.files.push(millis);
-                    let md = fs::metadata(path)?;
-                    journal_dir_size += md.len() as usize;
-                    self.state.last_file_size = md.len() as usize;
-                }
+        self.state.journal_dir = Some(self.options.journal_dir.into());
+        let mut journal_dir_size = 0usize;
+        for entry in fs::read_dir(&self.journal_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_dir() {
+                let filename = path.file_name().ok_or("Cannot convert Path to OsStr")?;
+                let filename = filename.to_str().ok_or("Cannot convert OsStr to &str")?;
+                let millis = Self::filename_to_epoch_msec(filename)?;
+                self.state.files.push(millis);
+                let md = fs::metadata(path)?;
+                journal_dir_size += md.len() as usize;
+                self.state.last_file_size = md.len() as usize;
             }
-            self.state.journal_dir_size = Some(journal_dir_size);
-            self.state.files.sort();
         }
-        Err(format!("Journal dir '{}' is not dir", self.options.journal_dir.to_str().unwrap_or("???")).into())
+        self.state.journal_dir_size = Some(journal_dir_size);
+        self.state.files.sort();
+        if let Some(n) = self.state.files.last() {
+            let last_file = Self::epoch_msec_to_filename(n)?;
+            let recent_millis = Self::find_last_entry_milis(&last_file)?.unwrap_or(*n);
+            self.state.recent_epoch_msec = Some(recent_millis);
+        }
+        Ok(())
     }
     fn filename_to_epoch_msec(filename: &str) -> crate::Result<i64> {
         let dt= chrono::NaiveDateTime::parse_from_str(&filename[0 .. 23], "%Y-%m-%dT%H-%M-%S-%f")?;
@@ -444,25 +517,25 @@ impl Journal {
             .ok_or(format!("Invalid epoch milis value: {}", milis))?;
         return Ok(dt.format("%Y-%m-%dT%H-%M-%S-%f").to_string());
     }
-    fn find_last_entry_milis(file: &Path, millis: i64) -> crate::Result<i64> {
+    fn find_last_entry_milis(file: &str) -> crate::Result<Option<i64>> {
         const SPC: u8 = ' ' as u8;
         const LF: u8 = '\n' as u8;
         const CR: u8 = '\r' as u8;
         const TAB: u8 = '\t' as u8;
         const CHUNK_SIZE: usize = 1024;
         const TIMESTAMP_SIZE: usize = "2021-12-13T12-13-14-456Z".len() as usize;
-        println!("file: {:?}", file);
+        //println!("file: {:?}", file);
         let mut buffer = vec![0u8; CHUNK_SIZE + TIMESTAMP_SIZE];
         let mut f = File::open(file)?;
         let file_size = f.metadata()?.len() as usize;
         if file_size == 0 {
             // empty file without data
-            return Ok(millis);
+            return Ok(None);
         }
         let mut start_pos = if file_size < CHUNK_SIZE { 0 } else { file_size - CHUNK_SIZE } as usize;
         loop {
             f.seek(std::io::SeekFrom::Start(start_pos as u64))?;
-            let mut read_count = f.read(&mut buffer)? as usize;
+            let read_count = f.read(&mut buffer)? as usize;
             // remove trailing blanks, like trailing '\n' in log file
             let mut pos = read_count;
             while pos > 0 {
@@ -486,7 +559,7 @@ impl Journal {
                     println!("dt str: {}", dt_str);
                     let dt = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%dT%H:%M:%S%.3fZ")
                         .map_err(|err| format!("Invalid date-time string: '{}', {}", dt_str, err))?;
-                    return Ok(dt.timestamp_millis())
+                    return Ok(Some(dt.timestamp_millis()))
                 }
                 pos -= 1;
             }
@@ -620,7 +693,6 @@ fn path_starts_with(path: &str, with: &str) -> bool {
 }
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
     use std::path::PathBuf;
     use crate::shvjournal::Journal;
 

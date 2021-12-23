@@ -1,6 +1,5 @@
 use structopt::StructOpt;
 use std::{env};
-use std::path::PathBuf;
 use std::time::Duration;
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue, metamethod};
 
