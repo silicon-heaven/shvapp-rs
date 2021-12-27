@@ -8,7 +8,7 @@ use std::str::from_utf8;
 use bitflags::bitflags;
 use regex::Regex;
 use log::log;
-use chainpack::{DateTime, RpcValue, MetaMap, Map, List};
+use chainpack::{DateTime, RpcValue, MetaMap, Map, List, Value};
 use chainpack::rpcvalue::IMap;
 
 #[allow(unused_macros)]
@@ -27,6 +27,7 @@ macro_rules! function {
         }
     }};
 }
+
 #[allow(unused_macros)]
 macro_rules! logShvJournalE {
     ($($arg:tt)+) => (
@@ -112,6 +113,62 @@ pub struct GetLogParams {
     with_path_dict: bool,
     is_since_last_entry: bool,
 }
+impl GetLogParams {
+    pub fn new() -> Self {
+        GetLogParams {
+            since: None,
+            until: None,
+            path_pattern: None,
+            domain_pattern: None,
+            record_count_limit: None,
+            with_snapshot: false,
+            with_path_dict: false,
+            is_since_last_entry: false
+        }
+    }
+    pub fn since(mut self, since: DateTime) -> Self {
+        self.since = Some(since);
+        self
+    }
+    pub fn since_last(mut self) -> Self {
+        self.is_since_last_entry = true;
+        self
+    }
+    pub fn until(mut self, until: DateTime) -> Self {
+        self.until = Some(until);
+        self
+    }
+    pub fn from_map(map: &Map) -> Self {
+        pub fn get_map<'a>(map: &'a Map, key: &str, default: &'a RpcValue) -> &'a RpcValue {
+            match map.get(key) {
+                None => { default }
+                Some(rv) => { rv }
+            }
+        }
+        let (since, is_since_last_entry) = match map.get("since") {
+            None => { (None, false) }
+            Some(rv) => {
+                match rv.value() {
+                    Value::DateTime(dt) => { (Some(*dt), false) }
+                    Value::String(str) if &str[..] == "last" => (None, true),
+                    _ => { (None, false) }
+                }
+            }
+        };
+        let until = map.get("until").map(|rv| rv.to_datetime()).flatten();
+        let path_pattern = map.get("pathPattern").map(|rv| rv.to_string());
+        Self {
+            since,
+            until,
+            path_pattern,
+            domain_pattern: map.get("domainPattern").map(|rv| rv.to_string()),
+            record_count_limit: map.get("recordCountLimit").map(|rv| rv.as_usize()),
+            with_snapshot: get_map(map, "withSnapshot", &RpcValue::from(false)).as_bool(),
+            with_path_dict: get_map(map, "withPathsDict", &RpcValue::from(false)).as_bool(),
+            is_since_last_entry,
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct LogHeader {
     log_version: i32,
@@ -158,6 +215,32 @@ impl LogHeader {
         }
         mm.insert("fields", self.fields.into());
         mm
+    }
+    fn from_meta_map(mm: &MetaMap) -> Self {
+        let (device_id, device_type) = if let Some(device) = mm.value("device") {
+            let m = device.as_map();
+            (
+                m.get("id").unwrap_or(&RpcValue::null()).to_string(),
+                m.get("type").unwrap_or(&RpcValue::null()).to_string()
+            )
+        } else {
+            ("".to_string(), "".to_string())
+        };
+        Self {
+            log_version: 0,
+            device_id: "".to_string(),
+            device_type: "".to_string(),
+            log_params: GetLogParams::from_map(mm.value("logParams").unwrap_or(&RpcValue::null()).as_map()),
+            datetime: mm.value("dateTime").unwrap_or(&RpcValue::null()).as_datetime(),
+            since: mm.value("since").map(|rv| rv.to_datetime()).flatten(),
+            until: mm.value("until").map(|rv| rv.to_datetime()).flatten(),
+            record_count: mm.value("recordCount").unwrap_or(&RpcValue::null()).as_usize(),
+            record_count_limit: mm.value("recordCountLimit").unwrap_or(&RpcValue::null()).as_usize(),
+            record_count_limit_hit: mm.value("recordCountLimitHit").unwrap_or(&RpcValue::null()).as_bool(),
+            with_snapshot: mm.value("withSnapshot").unwrap_or(&RpcValue::null()).as_bool(),
+            path_dict: None,
+            fields: vec![]
+        }
     }
 }
 
@@ -577,7 +660,7 @@ impl Journal {
             path_dict: if params.with_path_dict { Some(log_context.path_dict) } else { None },
             fields: vec!["timestamp".into(), "path".into(), "value".into(), "shortTime".into(), "domain".into(), "valueFlags".into(), "userId".into()],
         };
-        let mut ret = RpcValue::new(log_context.log);
+        let mut ret = RpcValue::from(log_context.log);
         ret.set_meta(log_header.to_meta_map());
         //logIShvJournal() << "result record cnt:" << log.size();
         Ok(ret)
@@ -617,7 +700,9 @@ impl Journal {
             self.state.recent_epoch_datetime = Some(recent_datetime);
         } else {
             if let Some(dt) = first_file_timestamp {
+                logShvJournalD!("Journal dir is empty, creating first file: {:?}", self.datetime_to_path(&dt));
                 self.create_new_log_file(&dt)?;
+                logShvJournalD!("Creating journal state again");
                 return self.create_journal_state(None);
             } else {
                 return Err("Cannot create first journal file, timestamp was not specified".into());
@@ -823,20 +908,24 @@ fn path_starts_with(path: &str, with: &str) -> bool {
 }
 #[cfg(test)]
 mod tests {
+    use std::fs::remove_dir_all;
     use std::path::PathBuf;
-    use flexi_logger::{Logger};
+    use flexi_logger::{colored_default_format, colored_detailed_format, default_format, Logger};
     //use env_logger::Logger;
     use log::{debug, error, info, trace, warn};
-    use chainpack::DateTime;
-    use crate::shvjournal::{Entry, Journal, Options};
+    use chainpack::{DateTime, make_map, rpcvalue, RpcValue};
+    use crate::shvjournal::{Entry, GetLogParams, Journal, Options};
 
     fn init_log() {
         //let _ = env_logger::builder().is_test(true).try_init();
+        let is_detailed = false;
         match Logger::try_with_env() {
             Ok(logger) => {
-                println!("flexi logger init OK");
-                match logger.start() {
-                    Ok(_) => { println!("flexi logger started OK") }
+                //println!("flexi logger init OK");
+                match logger.format(if is_detailed {colored_detailed_format} else {colored_default_format}).start() {
+                    Ok(_) => {
+                        //println!("flexi logger started OK")
+                    }
                     Err(_err) => {
                         // ignore double init error
                         //println!("flexi logger started ERROR: {:?}", err)
@@ -846,12 +935,14 @@ mod tests {
             Err(err) => { println!("flexi logger started ERROR: {:?}", err) }
         }
     }
-    fn create_journal() -> Journal {
+    fn create_journal() -> crate::Result<Journal> {
+        let journal_dir = "/tmp/shv-rs/journal-test";
+        remove_dir_all(journal_dir)?;
         Journal::new(Options {
-            journal_dir: "/tmp/shv-rs/journal-test".to_string(),
+            journal_dir: journal_dir.to_string(),
             file_size_limit: 1024,
             dir_size_limit: 1024 * 5,
-        }).unwrap()
+        })
     }
 
     #[test]
@@ -873,12 +964,25 @@ mod tests {
         let dt = Journal::find_last_entry_datetime(&PathBuf::from("tests/shvjournal/corrupted1.log2"));
         assert!(dt.is_err());
     }
+
     #[test]
     fn tst_write_log() -> crate::Result<()> {
         init_log();
         info!("=== Starting test: {}", function!());
-        let mut journal = create_journal();
-        let entry = Entry::new(None, "tc/status/occupied", true.into());
-        journal.append(&entry)
+        let mut journal = create_journal()?;
+        let entry = Entry::new(None, "tc/TC01/status/occupied", true.into());
+        journal.append(&entry)?;
+        let entry = Entry::new(None, "tc/TC01/status/error", false.into());
+        journal.append(&entry)?;
+        let entry = Entry::new(None, "tc/TC02/status/occupied", true.into());
+        journal.append(&entry)?;
+        let entry = Entry::new(None, "tc/TC02/status/error", false.into());
+        journal.append(&entry)?;
+        let vehicle_detected = make_map![ "vehicleId" => 1234, "direction" => "left" ];
+        let entry = Entry::new(None, "vetra/VET01/vehicleDetected", vehicle_detected.into());
+        journal.append(&entry)?;
+        let params = GetLogParams::new();//.since(DateTime::now().add_days(-1));
+        let log = journal.get_log(&params)?;
+        Ok(())
     }
 }

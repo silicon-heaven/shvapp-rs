@@ -115,8 +115,8 @@ impl TreeNode {
             else if method == "dir" {
                 #[allow(non_snake_case)]
                 if let None = &self.processor {
-                    let DIR = MetaMethod { name: "dir".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() };
-                    let LS =  MetaMethod { name: "ls".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() };
+                    let DIR = MetaMethod { name: "dir".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("bws"), description: "".into() };
+                    let LS =  MetaMethod { name: "ls".into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("bws"), description: "".into() };
                     // if processor does not exists
                     let mut lst = List::new();
                     lst.push(DIR.to_rpcvalue(255));

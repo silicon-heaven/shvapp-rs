@@ -63,26 +63,26 @@ impl ConnectionParams {
     fn to_rpcvalue(&self) -> RpcValue {
         let mut map = chainpack::rpcvalue::Map::new();
         let mut login = chainpack::rpcvalue::Map::new();
-        login.insert("user".into(), RpcValue::new(&self.user));
-        login.insert("password".into(), RpcValue::new(&self.password));
-        login.insert("type".into(), RpcValue::new(self.password_type.to_str()));
-        map.insert("login".into(), RpcValue::new(login));
+        login.insert("user".into(), RpcValue::from(&self.user));
+        login.insert("password".into(), RpcValue::from(&self.password));
+        login.insert("type".into(), RpcValue::from(self.password_type.to_str()));
+        map.insert("login".into(), RpcValue::from(login));
         let mut options = chainpack::rpcvalue::Map::new();
         if let Some(hbi) = self.heartbeat_interval {
-            options.insert("idleWatchDogTimeOut".into(), RpcValue::new(hbi.as_secs() * 3));
+            options.insert("idleWatchDogTimeOut".into(), RpcValue::from(hbi.as_secs() * 3));
         }
         let mut device = chainpack::rpcvalue::Map::new();
         if !self.device_id.is_empty() {
-            device.insert("deviceId".into(), RpcValue::new(&self.device_id));
+            device.insert("deviceId".into(), RpcValue::from(&self.device_id));
         }
         else if !self.mount_point.is_empty() {
-            device.insert("mountPoint".into(), RpcValue::new(&self.mount_point));
+            device.insert("mountPoint".into(), RpcValue::from(&self.mount_point));
         }
         if !device.is_empty() {
-            options.insert("device".into(), RpcValue::new(device));
+            options.insert("device".into(), RpcValue::from(device));
         }
-        map.insert("options".into(), RpcValue::new(options));
-        RpcValue::new(map)
+        map.insert("options".into(), RpcValue::from(options));
+        RpcValue::from(map)
     }
 }
 

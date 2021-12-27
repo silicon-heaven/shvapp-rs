@@ -57,16 +57,16 @@ impl RequestProcessor for FSDirRequestProcessor {
         #[allow(non_snake_case)]
         if method == M_DIR {
             //info!("DIR path: {} abs: {:?}", shv_path, self.make_absolute_path(shv_path));
-            let DIR = MetaMethod { name: M_DIR.into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() };
-            let LS = MetaMethod { name: M_LS.into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("bws"), description: "".into() };
-            let READ = MetaMethod { name: M_READ.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("rd")
+            let DIR = MetaMethod { name: M_DIR.into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("bws"), description: "".into() };
+            let LS = MetaMethod { name: M_LS.into(), signature: metamethod::Signature::RetParam, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("bws"), description: "".into() };
+            let READ = MetaMethod { name: M_READ.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("rd")
                 , description: "Read file content".into() };
-            let READ_COMPRESSED = MetaMethod { name: M_READ_COMPRESSED.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("rd")
+            let READ_COMPRESSED = MetaMethod { name: M_READ_COMPRESSED.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("rd")
                 , description: "Read file content compressed by LZ4".into() };
-            let SIZE = MetaMethod { name: M_SIZE.into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::new("rd"), description: "File content size".into() };
-            let HASH = MetaMethod { name: M_HASH.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("rd"), description: "File content SHA1".into() };
-            let CD = MetaMethod { name: M_CD.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("wr"), description: "Change root directory".into() };
-            let PWD = MetaMethod { name: M_PWD.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::new("rd"), description: "Current root directory".into() };
+            let SIZE = MetaMethod { name: M_SIZE.into(), signature: Signature::RetVoid, flags: metamethod::Flag::IsGetter.into(), access_grant: RpcValue::from("rd"), description: "File content size".into() };
+            let HASH = MetaMethod { name: M_HASH.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("rd"), description: "File content SHA1".into() };
+            let CD = MetaMethod { name: M_CD.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("wr"), description: "Change root directory".into() };
+            let PWD = MetaMethod { name: M_PWD.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("rd"), description: "Current root directory".into() };
             let mut lst = List::new();
             lst.push(DIR.to_rpcvalue(255));
             let path = self.make_absolute_path(shv_path);
