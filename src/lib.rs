@@ -8,6 +8,7 @@ pub mod utils;
 pub mod shvnode;
 pub mod shvfsnode;
 pub mod shvjournal;
+pub mod shvlog;
 
 /// Default port that a redis server listens on.
 ///
@@ -32,3 +33,20 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 /// This is defined as a convenience.
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[allow(unused_macros)]
+macro_rules! function {
+    () => {{
+        fn f() {}
+        fn type_name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        let name = type_name_of(f);
+
+        // Find and cut the rest of the path
+        match &name[..name.len() - 3].rfind(':') {
+            Some(pos) => &name[pos + 1..name.len() - 3],
+            None => &name[..name.len() - 3],
+        }
+    }};
+}
+pub(crate) use function;

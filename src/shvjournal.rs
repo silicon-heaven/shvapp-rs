@@ -5,28 +5,10 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
-use bitflags::bitflags;
 use regex::Regex;
 use log::log;
-use chainpack::{DateTime, RpcValue, MetaMap, Map, List, Value};
-use chainpack::rpcvalue::IMap;
-
-#[allow(unused_macros)]
-macro_rules! function {
-    () => {{
-        fn f() {}
-        fn type_name_of<T>(_: T) -> &'static str {
-            std::any::type_name::<T>()
-        }
-        let name = type_name_of(f);
-
-        // Find and cut the rest of the path
-        match &name[..name.len() - 3].rfind(':') {
-            Some(pos) => &name[pos + 1..name.len() - 3],
-            None => &name[..name.len() - 3],
-        }
-    }};
-}
+use chainpack::{DateTime, RpcValue, List};
+use crate::shvlog::{DEFAULT_GET_LOG_RECORD_COUNT_LIMIT, DOMAIN_VAL_CHANGE, Entry, EntryValueFlags, GetLogParams, LogHeader, LogHeaderField, MAX_GET_LOG_RECORD_COUNT_LIMIT, PathDict};
 
 #[allow(unused_macros)]
 macro_rules! logShvJournalE {
@@ -57,191 +39,6 @@ macro_rules! logShvJournalT {
     ($($arg:tt)+) => (
         log!(target: "ShvJournal", log::Level::Trace, $($arg)+)
     )
-}
-
-pub const DEFAULT_GET_LOG_RECORD_COUNT_LIMIT: usize = 100 * 1000;
-pub const MAX_GET_LOG_RECORD_COUNT_LIMIT: usize = 1000 * 1000;
-pub const DOMAIN_VAL_CHANGE: &str = "chng";
-
-bitflags! {
-    struct EntryValueFlags: u8 {
-        const SNAPSHOT     = 0b00000001;
-        const SPONTANEOUS  = 0b00000010;
-    }
-}
-impl EntryValueFlags {
-}
-
-#[derive(Debug, Clone)]
-pub struct Entry {
-    datetime: DateTime,
-    path: String,
-    value: RpcValue,
-    short_time: Option<i32>,
-    domain: String,
-    value_flags: EntryValueFlags,
-    user_id: String,
-}
-impl Entry {
-    pub fn new(datetime: Option<DateTime>, path: &str, value: RpcValue) -> Entry {
-        Entry {
-            datetime: match datetime {
-                None => {  DateTime::now() }
-                Some(dt) => { dt }
-            },
-            path: path.to_string(),
-            value,
-            short_time: None,
-            domain: DOMAIN_VAL_CHANGE.to_string(),
-            value_flags: EntryValueFlags::empty(),
-            user_id: "".to_string()
-        }
-    }
-    fn is_value_node_drop(&self) -> bool {
-        // NIY
-        false
-    }
-}
-#[derive(Debug, Clone)]
-pub struct GetLogParams {
-    since: Option<DateTime>,
-    until: Option<DateTime>,
-    path_pattern: Option<String>,
-    domain_pattern: Option<String>,
-    record_count_limit: Option<usize>,
-    with_snapshot: bool,
-    with_path_dict: bool,
-    is_since_last_entry: bool,
-}
-impl GetLogParams {
-    pub fn new() -> Self {
-        GetLogParams {
-            since: None,
-            until: None,
-            path_pattern: None,
-            domain_pattern: None,
-            record_count_limit: None,
-            with_snapshot: false,
-            with_path_dict: false,
-            is_since_last_entry: false
-        }
-    }
-    pub fn since(mut self, since: DateTime) -> Self {
-        self.since = Some(since);
-        self
-    }
-    pub fn since_last(mut self) -> Self {
-        self.is_since_last_entry = true;
-        self
-    }
-    pub fn until(mut self, until: DateTime) -> Self {
-        self.until = Some(until);
-        self
-    }
-    pub fn from_map(map: &Map) -> Self {
-        pub fn get_map<'a>(map: &'a Map, key: &str, default: &'a RpcValue) -> &'a RpcValue {
-            match map.get(key) {
-                None => { default }
-                Some(rv) => { rv }
-            }
-        }
-        let (since, is_since_last_entry) = match map.get("since") {
-            None => { (None, false) }
-            Some(rv) => {
-                match rv.value() {
-                    Value::DateTime(dt) => { (Some(*dt), false) }
-                    Value::String(str) if &str[..] == "last" => (None, true),
-                    _ => { (None, false) }
-                }
-            }
-        };
-        let until = map.get("until").map(|rv| rv.to_datetime()).flatten();
-        let path_pattern = map.get("pathPattern").map(|rv| rv.to_string());
-        Self {
-            since,
-            until,
-            path_pattern,
-            domain_pattern: map.get("domainPattern").map(|rv| rv.to_string()),
-            record_count_limit: map.get("recordCountLimit").map(|rv| rv.as_usize()),
-            with_snapshot: get_map(map, "withSnapshot", &RpcValue::from(false)).as_bool(),
-            with_path_dict: get_map(map, "withPathsDict", &RpcValue::from(false)).as_bool(),
-            is_since_last_entry,
-        }
-    }
-}
-#[derive(Debug, Clone)]
-pub struct LogHeader {
-    log_version: i32,
-    device_id: String,
-    device_type: String,
-    log_params: GetLogParams,
-    datetime: DateTime,
-    since: Option<DateTime>,
-    until: Option<DateTime>,
-    record_count: usize,
-    record_count_limit: usize,
-    record_count_limit_hit: bool,
-    with_snapshot: bool,
-    path_dict: Option<BTreeMap<String, i32>>,
-    fields: List,
-}
-impl LogHeader {
-    fn to_meta_map(self) -> MetaMap {
-        let mut mm = MetaMap::new();
-        mm.insert("logVersion", RpcValue::from(self.log_version));
-        let mut device = Map::new();
-        if !self.device_id.is_empty() {
-            device.insert("id".into(), self.device_id.into());
-        }
-        if !self.device_type.is_empty() {
-            device.insert("type".into(), self.device_type.into());
-        }
-        if !device.is_empty() {
-            mm.insert("device", device.into());
-        }
-        mm.insert("since", if let Some(dt) = self.since { dt.into() } else { ().into() });
-        mm.insert("until", if let Some(dt) = self.until { dt.into() } else { ().into() });
-        mm.insert("recordCount", self.record_count.into());
-        mm.insert("recordCountLimit", self.record_count_limit.into());
-        mm.insert("recordCountLimitHit", self.record_count_limit_hit.into());
-        mm.insert("withSnapshot", self.with_snapshot.into());
-        mm.insert("withPathsDict", self.path_dict.is_some().into());
-        if let Some(path_dict) = self.path_dict {
-            let mut pd = IMap::new();
-            for (path, key) in path_dict {
-                pd.insert(key,path.into());
-            }
-            mm.insert("pathsDict", pd.into());
-        }
-        mm.insert("fields", self.fields.into());
-        mm
-    }
-    fn from_meta_map(mm: &MetaMap) -> Self {
-        let (device_id, device_type) = if let Some(device) = mm.value("device") {
-            let m = device.as_map();
-            (
-                m.get("id").unwrap_or(&RpcValue::null()).to_string(),
-                m.get("type").unwrap_or(&RpcValue::null()).to_string()
-            )
-        } else {
-            ("".to_string(), "".to_string())
-        };
-        Self {
-            log_version: 0,
-            device_id: "".to_string(),
-            device_type: "".to_string(),
-            log_params: GetLogParams::from_map(mm.value("logParams").unwrap_or(&RpcValue::null()).as_map()),
-            datetime: mm.value("dateTime").unwrap_or(&RpcValue::null()).as_datetime(),
-            since: mm.value("since").map(|rv| rv.to_datetime()).flatten(),
-            until: mm.value("until").map(|rv| rv.to_datetime()).flatten(),
-            record_count: mm.value("recordCount").unwrap_or(&RpcValue::null()).as_usize(),
-            record_count_limit: mm.value("recordCountLimit").unwrap_or(&RpcValue::null()).as_usize(),
-            record_count_limit_hit: mm.value("recordCountLimitHit").unwrap_or(&RpcValue::null()).as_bool(),
-            with_snapshot: mm.value("withSnapshot").unwrap_or(&RpcValue::null()).as_bool(),
-            path_dict: None,
-            fields: vec![]
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -350,7 +147,7 @@ impl Journal {
             write_file(&b, false)?;
         }
         write_file(entry.domain.as_bytes(), false)?;
-        let b = entry.value_flags.bits.to_string();
+        let b = entry.value_flags.bits().to_string();
         write_file(b.as_bytes(), false)?;
         write_file(entry.user_id.as_bytes(), true)?;
         f.flush()?;
@@ -414,7 +211,7 @@ impl Journal {
             last_entry_datetime: Option<DateTime>,
             record_count_limit: usize,
             record_count_limit_hit: bool,
-            path_dict: BTreeMap<String, i32>,
+            rev_path_dict: BTreeMap<String, i32>,
             max_path_id: i32,
         }
         let mut snapshot_context = SnapshotContext {
@@ -430,15 +227,15 @@ impl Journal {
             last_entry_datetime: None,
             record_count_limit,
             record_count_limit_hit: false,
-            path_dict: BTreeMap::new(),
+            rev_path_dict: BTreeMap::new(),
             max_path_id: 0,
         };
         /// this ensure that there be only one copy of each path in memory
         fn make_path_shared(log_ctx: &mut LogContext, path: &str) -> i32 {
-            match log_ctx.path_dict.get(path) {
+            match log_ctx.rev_path_dict.get(path) {
                 None => {
                     log_ctx.max_path_id += 1;
-                    log_ctx.path_dict.insert(path.into(), log_ctx.max_path_id);
+                    log_ctx.rev_path_dict.insert(path.into(), log_ctx.max_path_id);
                     log_ctx.max_path_id
                 }
                 Some(n) => {*n}
@@ -508,7 +305,7 @@ impl Journal {
             if snapshot_ctx.snapshot.len() > log_ctx.record_count_limit {
                 return Err(format!("Snapshot is larger than record count limit: {}", log_ctx.record_count_limit).into());
             };
-            let snapshot_dt = if snapshot_ctx.params.is_since_last_entry {
+            let snapshot_dt = if snapshot_ctx.params.since_last_entry {
                 snapshot_ctx.last_entry_datetime
             } else {
                 snapshot_ctx.params.since
@@ -531,28 +328,28 @@ impl Journal {
             return Ok(true);
         }
         if !self.state.files.is_empty () {
-            //std::vector<int64_t>::const_iterator first_file_it = journal_context.files.begin();
-            //journal_start_msec = *first_file_it;
-            let mut first_file_ix = 0;
-            if self.state.files.len() > 0 {
-                if let Some(params_since) = &params.since {
-                    let params_since_msec = params_since.epoch_msec();
-                    logShvJournalD!("since: {:?}", &params.since);
-                    first_file_ix = match self.state.files.binary_search(&params_since_msec) {
-                        Ok(i) => {
-                            // take exactly this file
-                            logShvJournalD!("\texact match: {} {}", &i, &self.state.files[i]);
-                            i
-                        }
-                        Err(i) => {
-                            let i = i - 1;
-                            logShvJournalD!("\tnot found, taking previous file: {} {}", i, &self.state.files[i]);
-                            i
-                        }
-                    };
-                    let first_file_millis = self.state.files[first_file_ix];
-                    log_context.first_file_datetime = Some(DateTime::from_epoch_msec(first_file_millis));
-                }
+            let first_file_ix;
+            if let Some(params_since) = &params.since {
+                let params_since_msec = params_since.epoch_msec();
+                logShvJournalD!("since: {:?}", &params.since);
+                first_file_ix = match self.state.files.binary_search(&params_since_msec) {
+                    Ok(i) => {
+                        // take exactly this file
+                        logShvJournalD!("\texact match: {} {}", &i, &self.state.files[i]);
+                        i
+                    }
+                    Err(i) => {
+                        let i = i - 1;
+                        logShvJournalD!("\tnot found, taking previous file: {} {}", i, &self.state.files[i]);
+                        i
+                    }
+                };
+                let first_file_millis = self.state.files[first_file_ix];
+                log_context.first_file_datetime = Some(DateTime::from_epoch_msec(first_file_millis));
+            } else {
+                first_file_ix = 0;
+                let first_file_millis = self.state.files[first_file_ix];
+                log_context.first_file_datetime = Some(DateTime::from_epoch_msec(first_file_millis));
             }
             let path_pattern_regex = match &params.path_pattern {
                 None => {None}
@@ -584,12 +381,12 @@ impl Journal {
                 let dt = DateTime::from_epoch_msec(self.state.files[file_ix]);
                 let file_path = self.datetime_to_path(&dt)?;
                 logShvJournalD!("-------- opening file: {:?}", &file_path);
-                let reader = ShvJournalFileReader::new(&file_path)?;
+                let reader = JournalReader::new(&file_path)?;
                 for entry in reader {
-                    if let Err(err) = entry {
-                        return Err(err)
-                    }
-                    let entry = entry.unwrap();
+                    let entry = match entry {
+                        Ok(entry) => { entry }
+                        Err(err) => { return Err(err) }
+                    };
                     if !is_path_match(&entry.path) {
                         continue;
                     }
@@ -600,13 +397,15 @@ impl Journal {
                     let after_until = params.until.is_some() && params.until.unwrap() < entry.datetime;
                     if before_since {
                         //logShvJournalD!("\t SNAPSHOT entry: {}", entry);
-                        add_to_snapshot(&mut snapshot_context, entry);
+                        if params.with_snapshot {
+                            add_to_snapshot(&mut snapshot_context, entry);
+                        }
                     }
                     else if after_until {
                         break 'scan_files;
                     }
                     else {
-                        if !snapshot_context.is_snapshot_written {
+                        if params.with_snapshot && !snapshot_context.is_snapshot_written {
                             snapshot_context.is_snapshot_written = true;
                             if !write_snapshot(&mut snapshot_context, &mut log_context)? {
                                 break 'scan_files;
@@ -623,13 +422,13 @@ impl Journal {
         // snapshot should be written already
         // this is only case, when log is empty and
         // only snapshot shall be returned
-        if !snapshot_context.is_snapshot_written {
+        if params.with_snapshot && !snapshot_context.is_snapshot_written {
             snapshot_context.is_snapshot_written = true;
             write_snapshot(&mut snapshot_context,&mut log_context)?;
         }
         // if since is not specified in params
         // then use TS of first file used
-        let log_since = if params.is_since_last_entry {
+        let log_since = if params.since_last_entry {
             log_context.last_entry_datetime
         } else if params.since.is_some() {
             params.since
@@ -657,17 +456,30 @@ impl Journal {
             record_count_limit,
             record_count_limit_hit: log_context.record_count_limit_hit,
             with_snapshot: snapshot_context.is_snapshot_written,
-            path_dict: if params.with_path_dict { Some(log_context.path_dict) } else { None },
-            fields: vec!["timestamp".into(), "path".into(), "value".into(), "shortTime".into(), "domain".into(), "valueFlags".into(), "userId".into()],
+            path_dict: if params.with_path_dict {
+                let mut path_dict = PathDict::new();
+                for (k, v) in log_context.rev_path_dict {
+                    path_dict.insert(v, k);
+                }
+                Some(path_dict)
+            } else { None },
+            fields: vec![
+                LogHeaderField{name: "timestamp".into()},
+                LogHeaderField{name: "path".into()},
+                LogHeaderField{name: "value".into()},
+                LogHeaderField{name: "shortTime".into()},
+                LogHeaderField{name: "domain".into()},
+                LogHeaderField{name: "valueFlags".into()},
+                LogHeaderField{name: "userId".into()},
+            ],
         };
-        let mut ret = RpcValue::from(log_context.log);
-        ret.set_meta(log_header.to_meta_map());
+        let ret = RpcValue::from(log_context.log).set_meta(Some(log_header.to_meta_map()));
         //logIShvJournal() << "result record cnt:" << log.size();
         Ok(ret)
     }
 
     fn create_journal_state(&mut self, first_file_timestamp: Option<DateTime>) -> crate::Result<()> {
-        logShvJournalD!("{}", function!());
+        logShvJournalD!("{}", crate::function!());
         self.state = JournalState {
             journal_dir: None,
             files: Vec::new(),
@@ -794,32 +606,26 @@ impl Journal {
         }
     }
 }
-struct ShvJournalFileReader {
+pub struct JournalReader {
 }
-impl ShvJournalFileReader {
-    fn new(file_path: &Path) -> crate::Result<Entries<BufReader<File>>> {
+impl JournalReader {
+    fn new(file_path: &Path) -> crate::Result<JournalEntries<BufReader<File>>> {
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
-        Ok(Entries {
+        Ok(JournalEntries {
             buf: reader,
         })
     }
 }
 #[derive(Debug)]
-pub struct Entries<B> {
+pub struct JournalEntries<B> {
     buf: B,
 }
 
-impl<B: BufRead> Iterator for Entries<B> {
+impl<B: BufRead> Iterator for JournalEntries<B> {
     type Item = crate::Result<Entry>;
 
     fn next(&mut self) -> Option<crate::Result<Entry>> {
-        //let next_field = |split: &mut str::Split<char>, err: &str| -> crate::Result<&str> {
-        //    match split.next() {
-        //        Some(str) => { Ok(str) }
-        //        None => { if err.is_empty() { Ok("") } else { Err(err.into()) }}
-        //    }
-        //};
         let mut line = String::new();
         loop {
             match self.buf.read_line(&mut line) {
@@ -836,8 +642,8 @@ impl<B: BufRead> Iterator for Entries<B> {
                     let datetime = match fields.next() {
                         None => { return Some(Err("TimeStamp field missing".into())) }
                         Some(s) => {
-                            match RpcValue::from_cpon(s) {
-                                Ok(dt) => { dt.as_datetime() }
+                            match DateTime::from_iso_str(s) {
+                                Ok(dt) => { dt }
                                 Err(err) => { return Some(Err(err.into())) }
                             }
                         }
@@ -910,11 +716,12 @@ fn path_starts_with(path: &str, with: &str) -> bool {
 mod tests {
     use std::fs::remove_dir_all;
     use std::path::PathBuf;
-    use flexi_logger::{colored_default_format, colored_detailed_format, default_format, Logger};
+    use flexi_logger::{colored_default_format, colored_detailed_format, Logger};
     //use env_logger::Logger;
-    use log::{debug, error, info, trace, warn};
+    use log::{info, log};
     use chainpack::{DateTime, make_map, rpcvalue, RpcValue};
-    use crate::shvjournal::{Entry, GetLogParams, Journal, Options};
+    use crate::shvjournal::{Journal, Options};
+    use crate::shvlog::{Entry, GetLogParams, LogHeader};
 
     fn init_log() {
         //let _ = env_logger::builder().is_test(true).try_init();
@@ -948,7 +755,7 @@ mod tests {
     #[test]
     fn tst_find_last_entry_datetime() {
         init_log();
-        info!("=== Starting test: {}", function!());
+        info!("=== Starting test: {}", crate::function!());
         //trace!("{}:{} DDD trace", file!(), line!());
         //debug!("{}:{} DDD trace", file!(), line!());
         //info!("{}:{} DDD trace", file!(), line!());
@@ -968,7 +775,7 @@ mod tests {
     #[test]
     fn tst_write_log() -> crate::Result<()> {
         init_log();
-        info!("=== Starting test: {}", function!());
+        info!("=== Starting test: {}", crate::function!());
         let mut journal = create_journal()?;
         let entry = Entry::new(None, "tc/TC01/status/occupied", true.into());
         journal.append(&entry)?;
@@ -981,8 +788,46 @@ mod tests {
         let vehicle_detected = make_map![ "vehicleId" => 1234, "direction" => "left" ];
         let entry = Entry::new(None, "vetra/VET01/vehicleDetected", vehicle_detected.into());
         journal.append(&entry)?;
-        let params = GetLogParams::new();//.since(DateTime::now().add_days(-1));
-        let log = journal.get_log(&params)?;
+        const EXPECTED_RECORD_COUNT: usize = 5;
+        {
+            info!("--- get log with default params: {}", crate::function!());
+            let params = GetLogParams::new();//.since(DateTime::now().add_days(-1));
+            let log = journal.get_log(&params)?;
+            //logShvJournalT!("log: {}", log);
+            let header = LogHeader::from_meta_map(log.meta());
+            assert_eq!(header.record_count, EXPECTED_RECORD_COUNT);
+            assert_eq!(header.record_count_limit_hit, false);
+            assert_eq!(header.with_snapshot, false);
+            assert_eq!(header.path_dict.is_some(), true);
+            assert_eq!(header.path_dict.unwrap().len(), EXPECTED_RECORD_COUNT);
+            assert_eq!(header.since.is_some(), true);
+            assert_ne!(header.since.unwrap().epoch_msec(), 0);
+            assert_eq!(header.until.is_some(), true);
+            assert_ne!(header.until.unwrap().epoch_msec(), 0);
+            let record_list = log.as_list();
+            assert_eq!(record_list.len(), EXPECTED_RECORD_COUNT);
+            let e1 = Entry::from_rpcvalue(record_list.first().unwrap())?;
+            let e2 = Entry::from_rpcvalue(record_list.last().unwrap())?;
+            assert_eq!(header.since.unwrap(), e1.datetime);
+            assert_eq!(header.until.unwrap(), e2.datetime);
+        }
+        {
+            info!("--- get log with snapshot: {}", crate::function!());
+            let params = GetLogParams::new()
+                .with_snapshot(true)
+                .with_path_dict(false)
+                .since_last_entry(true);
+            let log = journal.get_log(&params)?;
+            logShvJournalT!("log: {}", log);
+            let header = LogHeader::from_meta_map(log.meta());
+            assert_eq!(header.record_count, EXPECTED_RECORD_COUNT);
+            assert_eq!(header.with_snapshot, true);
+            assert_eq!(header.path_dict.is_none(), true);
+            for rec in log.as_list() {
+                let e = Entry::from_rpcvalue(rec)?;
+                assert_eq!(header.since.unwrap(), e.datetime);
+            }
+        }
         Ok(())
     }
 }
