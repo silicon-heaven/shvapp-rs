@@ -132,31 +132,36 @@ pub const DEFAULT_GET_LOG_RECORD_COUNT_LIMIT: usize = 100 * 1000;
 pub const MAX_GET_LOG_RECORD_COUNT_LIMIT: usize = 1000 * 1000;
 
 #[derive(Debug, Clone)]
+pub enum GetLogSince {
+    Some(DateTime),
+    LastEntry,
+    None,
+}
+
+#[derive(Debug, Clone)]
 pub struct GetLogParams {
-    pub since: Option<DateTime>,
+    pub since: GetLogSince,
     pub until: Option<DateTime>,
     pub path_pattern: Option<String>,
     pub domain_pattern: Option<String>,
     pub record_count_limit: Option<usize>,
     pub with_snapshot: bool,
     pub with_path_dict: bool,
-    pub since_last_entry: bool,
 }
 impl GetLogParams {
     pub fn new() -> Self {
         GetLogParams {
-            since: None,
+            since: GetLogSince::None,
             until: None,
             path_pattern: None,
             domain_pattern: None,
             record_count_limit: None,
             with_snapshot: false,
             with_path_dict: true,
-            since_last_entry: false
         }
     }
-    pub fn since(mut self, since: DateTime) -> Self { self.since = Some(since); self }
-    pub fn since_last_entry(mut self, b: bool) -> Self { self.since_last_entry = b; self }
+    pub fn since(mut self, since: DateTime) -> Self { self.since = GetLogSince::Some(since); self }
+    pub fn since_last_entry(mut self) -> Self { self.since = GetLogSince::LastEntry; self }
     pub fn until(mut self, until: DateTime) -> Self { self.until = Some(until); self }
     pub fn with_snapshot(mut self, b: bool) -> Self { self.with_snapshot = b; self }
     pub fn with_path_dict(mut self, b: bool) -> Self { self.with_path_dict = b; self }
@@ -167,13 +172,13 @@ impl GetLogParams {
                 Some(rv) => { rv }
             }
         }
-        let (since, is_since_last_entry) = match map.get("since") {
-            None => { (None, false) }
+        let since = match map.get("since") {
+            None => { GetLogSince::None }
             Some(rv) => {
                 match rv.value() {
-                    Value::DateTime(dt) => { (Some(*dt), false) }
-                    Value::String(str) if &str[..] == "last" => (None, true),
-                    _ => { (None, false) }
+                    Value::DateTime(dt) => GetLogSince::Some(*dt),
+                    Value::String(str) if &str[..] == "last" => GetLogSince::LastEntry,
+                    _ => GetLogSince::None,
                 }
             }
         };
@@ -187,7 +192,6 @@ impl GetLogParams {
             record_count_limit: map.get("recordCountLimit").map(|rv| rv.as_usize()),
             with_snapshot: get_map(map, "withSnapshot", &RpcValue::from(false)).as_bool(),
             with_path_dict: get_map(map, "withPathsDict", &RpcValue::from(false)).as_bool(),
-            since_last_entry: is_since_last_entry,
         }
     }
 }
@@ -253,7 +257,7 @@ impl LogHeader {
         mm
     }
     pub(crate) fn from_meta_map(mm: &MetaMap) -> Self {
-        let (device_id, device_type) = if let Some(device) = mm.value("device") {
+        let (device_id, device_type) = if let Some(device) = mm.get("device") {
             let m = device.as_map();
             (
                 m.get("id").unwrap_or(&RpcValue::null()).to_string(),
@@ -262,7 +266,7 @@ impl LogHeader {
         } else {
             ("".to_string(), "".to_string())
         };
-        let path_dict = if let Some(rv) = mm.value("pathsDict") {
+        let path_dict = if let Some(rv) = mm.get("pathsDict") {
             let dict = rv.as_imap();
             let mut path_dict: PathDict = PathDict::new();
             for (k, v) in dict {
@@ -276,16 +280,16 @@ impl LogHeader {
             log_version: 0,
             device_id,
             device_type,
-            log_params: GetLogParams::from_map(mm.value("logParams").unwrap_or(&RpcValue::null()).as_map()),
-            datetime: mm.value("dateTime").unwrap_or(&RpcValue::null()).as_datetime(),
-            since: mm.value("since").map(|rv| rv.to_datetime()).flatten(),
-            until: mm.value("until").map(|rv| rv.to_datetime()).flatten(),
-            record_count: mm.value("recordCount").unwrap_or(&RpcValue::null()).as_usize(),
-            record_count_limit: mm.value("recordCountLimit").unwrap_or(&RpcValue::null()).as_usize(),
-            record_count_limit_hit: mm.value("recordCountLimitHit").unwrap_or(&RpcValue::null()).as_bool(),
-            with_snapshot: mm.value("withSnapshot").unwrap_or(&RpcValue::null()).as_bool(),
+            log_params: GetLogParams::from_map(mm.get("logParams").unwrap_or(&RpcValue::null()).as_map()),
+            datetime: mm.get("dateTime").unwrap_or(&RpcValue::null()).as_datetime(),
+            since: mm.get("since").map(|rv| rv.to_datetime()).flatten(),
+            until: mm.get("until").map(|rv| rv.to_datetime()).flatten(),
+            record_count: mm.get("recordCount").unwrap_or(&RpcValue::null()).as_usize(),
+            record_count_limit: mm.get("recordCountLimit").unwrap_or(&RpcValue::null()).as_usize(),
+            record_count_limit_hit: mm.get("recordCountLimitHit").unwrap_or(&RpcValue::null()).as_bool(),
+            with_snapshot: mm.get("withSnapshot").unwrap_or(&RpcValue::null()).as_bool(),
             path_dict,
-            fields: if let Some(rv) = mm.value("fields") {
+            fields: if let Some(rv) = mm.get("fields") {
                 let mut fields: Vec<LogHeaderField> = Vec::new();
                 for field in rv.as_list() {
                     fields.push(LogHeaderField {

@@ -8,7 +8,7 @@ use std::str::from_utf8;
 use regex::Regex;
 use log::log;
 use chainpack::{DateTime, RpcValue, List};
-use crate::shvlog::{DEFAULT_GET_LOG_RECORD_COUNT_LIMIT, DOMAIN_VAL_CHANGE, Entry, EntryValueFlags, GetLogParams, LogHeader, LogHeaderField, MAX_GET_LOG_RECORD_COUNT_LIMIT, PathDict};
+use crate::shvlog::{DEFAULT_GET_LOG_RECORD_COUNT_LIMIT, DOMAIN_VAL_CHANGE, Entry, EntryValueFlags, GetLogSince, GetLogParams, LogHeader, LogHeaderField, MAX_GET_LOG_RECORD_COUNT_LIMIT, PathDict};
 
 #[allow(unused_macros)]
 macro_rules! logShvJournalE {
@@ -247,6 +247,7 @@ impl Journal {
                 return;
             }
             snapshot_ctx.last_entry_datetime = Some(entry.datetime);
+            //println!("snapshot entry: {:?}", &entry);
             if entry.is_value_node_drop() {
                 let mut drop_keys: Vec<String> = vec![];
                 let entry_path = entry.path.clone();
@@ -305,14 +306,15 @@ impl Journal {
             if snapshot_ctx.snapshot.len() > log_ctx.record_count_limit {
                 return Err(format!("Snapshot is larger than record count limit: {}", log_ctx.record_count_limit).into());
             };
-            let snapshot_dt = if snapshot_ctx.params.since_last_entry {
-                snapshot_ctx.last_entry_datetime
-            } else {
-                snapshot_ctx.params.since
-            };
-            let snapshot_dt = match snapshot_dt {
-                None => { return Err("Cannot create snapshot datetime.".into()) }
-                Some(dt) => { dt }
+            let snapshot_dt = match snapshot_ctx.params.since {
+                GetLogSince::Some(dt) => { dt }
+                GetLogSince::LastEntry => {
+                    snapshot_ctx.last_entry_datetime
+                        .ok_or("Internal error: Cannot have snapshot without last entry set")?
+                }
+                GetLogSince::None => {
+                    return Err("Internal error: Cannot have snapshot without since defined".into());
+                }
             };
             for (_, e) in &snapshot_ctx.snapshot {
                 let mut entry = e.clone();
@@ -328,28 +330,36 @@ impl Journal {
             return Ok(true);
         }
         if !self.state.files.is_empty () {
+            logShvJournalD!("since: {:?}", &params.since);
             let first_file_ix;
-            if let Some(params_since) = &params.since {
-                let params_since_msec = params_since.epoch_msec();
-                logShvJournalD!("since: {:?}", &params.since);
-                first_file_ix = match self.state.files.binary_search(&params_since_msec) {
-                    Ok(i) => {
-                        // take exactly this file
-                        logShvJournalD!("\texact match: {} {}", &i, &self.state.files[i]);
-                        i
-                    }
-                    Err(i) => {
-                        let i = i - 1;
-                        logShvJournalD!("\tnot found, taking previous file: {} {}", i, &self.state.files[i]);
-                        i
-                    }
-                };
-                let first_file_millis = self.state.files[first_file_ix];
-                log_context.first_file_datetime = Some(DateTime::from_epoch_msec(first_file_millis));
-            } else {
-                first_file_ix = 0;
-                let first_file_millis = self.state.files[first_file_ix];
-                log_context.first_file_datetime = Some(DateTime::from_epoch_msec(first_file_millis));
+            match &params.since {
+                GetLogSince::Some(since_dt) => {
+                    let since_msec = since_dt.epoch_msec();
+                    first_file_ix = match self.state.files.binary_search(&since_msec) {
+                        Ok(i) => {
+                            // take exactly this file
+                            logShvJournalD!("\texact match: {} {}", &i, &self.state.files[i]);
+                            i
+                        }
+                        Err(i) => {
+                            let i = i - 1;
+                            logShvJournalD!("\tnot found, taking previous file: {} {}", i, &self.state.files[i]);
+                            i
+                        }
+                    };
+                    let first_file_millis = self.state.files[first_file_ix];
+                    log_context.first_file_datetime = Some(DateTime::from_epoch_msec(first_file_millis));
+                }
+                GetLogSince::LastEntry => {
+                    first_file_ix = self.state.files.len() - 1;
+                    let first_file_millis = self.state.files[first_file_ix];
+                    log_context.first_file_datetime = Some(DateTime::from_epoch_msec(first_file_millis));
+                }
+                GetLogSince::None => {
+                    first_file_ix = 0;
+                    let first_file_millis = self.state.files[first_file_ix];
+                    log_context.first_file_datetime = Some(DateTime::from_epoch_msec(first_file_millis));
+                }
             }
             let path_pattern_regex = match &params.path_pattern {
                 None => {None}
@@ -393,7 +403,11 @@ impl Journal {
                     if !is_domain_match(&entry.domain) {
                         continue;
                     }
-                    let before_since = params.since.is_some() && entry.datetime < params.since.unwrap();
+                    let before_since = match params.since {
+                        GetLogSince::Some(dt) => { entry.datetime < dt }
+                        GetLogSince::LastEntry => { true }
+                        GetLogSince::None => { false }
+                    };
                     let after_until = params.until.is_some() && params.until.unwrap() < entry.datetime;
                     if before_since {
                         //logShvJournalD!("\t SNAPSHOT entry: {}", entry);
@@ -428,14 +442,10 @@ impl Journal {
         }
         // if since is not specified in params
         // then use TS of first file used
-        let log_since = if params.since_last_entry {
-            log_context.last_entry_datetime
-        } else if params.since.is_some() {
-            params.since
-        } else if log_context.first_file_datetime.is_some() {
-            log_context.first_file_datetime
-        } else {
-            None
+        let log_since = match params.since {
+            GetLogSince::Some(since) => { Some(since) }
+            GetLogSince::LastEntry => { log_context.last_entry_datetime }
+            GetLogSince::None => { log_context.first_file_datetime }
         };
         let log_until = if log_context.record_count_limit_hit {
             log_context.last_entry_datetime
@@ -716,6 +726,7 @@ fn path_starts_with(path: &str, with: &str) -> bool {
 mod tests {
     use std::fs::remove_dir_all;
     use std::path::PathBuf;
+    use std::thread;
     use flexi_logger::{colored_default_format, colored_detailed_format, Logger};
     //use env_logger::Logger;
     use log::{info, log};
@@ -781,6 +792,7 @@ mod tests {
         journal.append(&entry)?;
         let entry = Entry::new(None, "tc/TC01/status/error", false.into());
         journal.append(&entry)?;
+        thread::sleep(std::time::Duration::from_millis(10));
         let entry = Entry::new(None, "tc/TC02/status/occupied", true.into());
         journal.append(&entry)?;
         let entry = Entry::new(None, "tc/TC02/status/error", false.into());
@@ -788,18 +800,23 @@ mod tests {
         let vehicle_detected = make_map![ "vehicleId" => 1234, "direction" => "left" ];
         let entry = Entry::new(None, "vetra/VET01/vehicleDetected", vehicle_detected.into());
         journal.append(&entry)?;
-        const EXPECTED_RECORD_COUNT: usize = 5;
+        let entry = Entry::new(None, "tc/TC01/status/occupied", false.into());
+        journal.append(&entry)?;
+        let last_log_entry = entry;
         {
             info!("--- get log with default params: {}", crate::function!());
+            const EXPECTED_RECORD_COUNT: usize = 6;
             let params = GetLogParams::new();//.since(DateTime::now().add_days(-1));
             let log = journal.get_log(&params)?;
-            //logShvJournalT!("log: {}", log);
+            logShvJournalT!("log: {}", log.to_cpon_indented("\t")?);
+            //println!("log: {}", log.to_cpon_indented("\t")?);
             let header = LogHeader::from_meta_map(log.meta());
+            assert!(!header.fields.is_empty());
             assert_eq!(header.record_count, EXPECTED_RECORD_COUNT);
             assert_eq!(header.record_count_limit_hit, false);
             assert_eq!(header.with_snapshot, false);
             assert_eq!(header.path_dict.is_some(), true);
-            assert_eq!(header.path_dict.unwrap().len(), EXPECTED_RECORD_COUNT);
+            assert_eq!(header.path_dict.unwrap().len(), EXPECTED_RECORD_COUNT - 1);
             assert_eq!(header.since.is_some(), true);
             assert_ne!(header.since.unwrap().epoch_msec(), 0);
             assert_eq!(header.until.is_some(), true);
@@ -810,23 +827,29 @@ mod tests {
             let e2 = Entry::from_rpcvalue(record_list.last().unwrap())?;
             assert_eq!(header.since.unwrap(), e1.datetime);
             assert_eq!(header.until.unwrap(), e2.datetime);
+            assert_eq!(last_log_entry.datetime, e2.datetime);
         }
         {
-            info!("--- get log with snapshot: {}", crate::function!());
+            info!("--- get log with snapshot since last: {}", crate::function!());
+            const EXPECTED_RECORD_COUNT: usize = 2; // VET01 + TC02/occupied
             let params = GetLogParams::new()
                 .with_snapshot(true)
                 .with_path_dict(false)
-                .since_last_entry(true);
+                .since_last_entry();
             let log = journal.get_log(&params)?;
-            logShvJournalT!("log: {}", log);
+            logShvJournalT!("log: {}", log.to_cpon_indented("\t")?);
             let header = LogHeader::from_meta_map(log.meta());
             assert_eq!(header.record_count, EXPECTED_RECORD_COUNT);
             assert_eq!(header.with_snapshot, true);
             assert_eq!(header.path_dict.is_none(), true);
-            for rec in log.as_list() {
+            let record_list = log.as_list();
+            assert_eq!(record_list.len(), EXPECTED_RECORD_COUNT);
+            for rec in record_list {
                 let e = Entry::from_rpcvalue(rec)?;
                 assert_eq!(header.since.unwrap(), e.datetime);
             }
+            assert_eq!(last_log_entry.datetime, header.since.unwrap());
+            assert_eq!(last_log_entry.datetime, header.until.unwrap());
         }
         Ok(())
     }
