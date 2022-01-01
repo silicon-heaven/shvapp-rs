@@ -71,32 +71,43 @@ pub struct Journal {
 }
 impl Journal {
     pub fn new(options: Options) -> crate::Result<Self> {
-        fs::create_dir_all(&options.journal_dir)?;
-        Ok (Self {
+        let mut journal = Journal {
             options,
-            state: JournalState{
+            state: JournalState {
                 journal_dir: None,
                 files: vec![],
                 journal_dir_size: None,
                 last_file_size: 0,
                 recent_epoch_datetime: None
             },
-        })
+        };
+        journal.create_state()?;
+        Ok(journal)
     }
     pub fn append(&mut self, entry: &Entry) -> crate::Result<()> {
+        if !self.state.is_consistent() {
+            if self.state.files.is_empty() {
+                logShvJournalD!("Journal dir is empty, creating new one");
+                self.init_journal_dir(&entry.datetime)?;
+                self.create_state()?;
+            }
+        }
+        if !self.state.is_consistent() {
+            return Err("Journal state is not consistent, cannot append log entry".into());
+        }
         let mut datetime = entry.datetime;
         if let Some(dt) = self.state.recent_epoch_datetime {
             datetime = max(datetime, dt);
         }
-        if !self.state.is_consistent() {
-            logShvJournalD!("Journal state not consistent, creating new one");
-            self.create_journal_state(Some(datetime))?;
-        }
         match self.try_append(entry) {
             Ok(_) => {Ok(())},
             Err(err) => {
-                logShvJournalE!("Append log error: {}, trying to fix it by creating new journal state", err);
-                self.create_journal_state(Some(datetime))?;
+                logShvJournalE!("Append log error: {}, trying to fix it by re-init journal dir", err);
+                self.init_journal_dir(&datetime)?;
+                self.create_state()?;
+                if !self.state.is_consistent() {
+                    return Err("Journal state is not consistent even after journal dir re-init, cannot append log entry".into());
+                }
                 self.try_append(entry)
             }
         }
@@ -162,7 +173,7 @@ impl Journal {
         }
         Ok(())
     }
-    pub fn create_new_log_file(&mut self, datetime: &DateTime) -> crate::Result<()> {
+    pub fn create_new_log_file(&self, datetime: &DateTime) -> crate::Result<()> {
         let file_path = self.datetime_to_path(datetime)?;
         File::create(file_path)?;
         Ok(())
@@ -187,10 +198,11 @@ impl Journal {
             file_cnt -= 1;
         }
         //logMShvJournal() << "New journal of size:" << m_journalContext.journalSize;
-        self.create_journal_state(None)
+        self.create_state()?;
+        Ok(())
     }
     pub fn get_log(&self, params: &GetLogParams) -> crate::Result<RpcValue> {
-        logShvJournalD!("========================= getLog ==================");
+        logShvJournalD!("------------- get_log() ---------------------");
         logShvJournalD!("params: {:?}", params);
 
         let record_count_limit = match params.record_count_limit {
@@ -488,7 +500,12 @@ impl Journal {
         Ok(ret)
     }
 
-    fn create_journal_state(&mut self, first_file_timestamp: Option<DateTime>) -> crate::Result<()> {
+    fn init_journal_dir(&mut self, new_file_datetime: &DateTime) -> crate::Result<()> {
+        fs::create_dir_all(&self.options.journal_dir)?;
+        self.create_state()?;
+        self.create_new_log_file(new_file_datetime)
+    }
+    fn create_state(&mut self) -> crate::Result<()> {
         logShvJournalD!("{}", crate::function!());
         self.state = JournalState {
             journal_dir: None,
@@ -498,51 +515,59 @@ impl Journal {
             recent_epoch_datetime: None,
         };
         let journal_dir: PathBuf = self.options.journal_dir.clone().into();
-        fs::create_dir_all(&journal_dir)?;
         let mut journal_dir_size: u64 = 0;
-        for entry in fs::read_dir(&journal_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_dir() {
-                let millis = self.path_to_datetime(&path)?.epoch_msec();
-                logShvJournalT!("adding journal file: {:?} -> millis: {}", path, millis);
-                self.state.files.push(millis);
-                let md = fs::metadata(path)?;
-                journal_dir_size += md.len();
-                self.state.last_file_size = md.len();
+        match fs::read_dir(&journal_dir) {
+            Ok(dir) => {
+                for entry in dir {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        let millis = Self::path_to_datetime(&path)?.epoch_msec();
+                        logShvJournalT!("adding journal file: {:?} -> millis: {}", path, millis);
+                        self.state.files.push(millis);
+                        let md = fs::metadata(path)?;
+                        journal_dir_size += md.len();
+                        self.state.last_file_size = md.len();
+                    }
+                }
+                self.state.journal_dir = Some(journal_dir);
+                self.state.journal_dir_size = Some(journal_dir_size);
+                self.state.files.sort();
+                if let Some(n) = self.state.files.last() {
+                    let last_file = self.datetime_to_path(&DateTime::from_epoch_msec(*n))?;
+                    logShvJournalT!("last file: {:?} -> millis: {}", last_file, *n);
+                    let recent_datetime = Self::find_last_entry_datetime(&last_file)?.unwrap_or(DateTime::from_epoch_msec(*n));
+                    self.state.recent_epoch_datetime = Some(recent_datetime);
+                }
             }
-        }
-        self.state.journal_dir = Some(journal_dir);
-        self.state.journal_dir_size = Some(journal_dir_size);
-        self.state.files.sort();
-        if let Some(n) = self.state.files.last() {
-            let last_file = self.datetime_to_path(&DateTime::from_epoch_msec(*n))?;
-            logShvJournalT!("last file: {:?} -> millis: {}", last_file, *n);
-            let recent_datetime = Self::find_last_entry_datetime(&last_file)?.unwrap_or(DateTime::from_epoch_msec(*n));
-            self.state.recent_epoch_datetime = Some(recent_datetime);
-        } else {
-            if let Some(dt) = first_file_timestamp {
-                logShvJournalD!("Journal dir is empty, creating first file: {:?}", self.datetime_to_path(&dt));
-                self.create_new_log_file(&dt)?;
-                logShvJournalD!("Creating journal state again");
-                return self.create_journal_state(None);
-            } else {
-                return Err("Cannot create first journal file, timestamp was not specified".into());
+            Err(_) => {
+                // dir not exists
             }
         }
         Ok(())
     }
-    fn path_to_datetime(&self, path: &std::path::Path) -> crate::Result<DateTime> {
+    fn path_to_datetime(path: &std::path::Path) -> crate::Result<DateTime> {
         let base_name = path.file_stem().ok_or(format!("Path '{:?}' is not valid log file path.", path))?;
         let base_name = base_name.to_str().ok_or(format!("Cannot convert OsStr '{:?}' to &str", base_name))?;
         Self::file_base_name_to_datetime(base_name)
     }
     fn datetime_to_path(&self, datetime: &DateTime) -> crate::Result<PathBuf> {
         let file_name = Self::datetime_to_file_base_name(datetime)? + ".log2";
-        let mut path = self.state.journal_dir.clone().ok_or("Journal dir is not set!")?;
+        let mut path = match &self.state.journal_dir {
+            None => {
+                return Err("Cannot convert datetime to journal file, journal dir is invalid".into())
+            }
+            Some(path) => { path.clone() }
+        };
         path.push(file_name);
         Ok(path)
     }
+    //fn dir_datetime_to_path(path: &Path, datetime: &DateTime) -> crate::Result<PathBuf> {
+    //    let file_name = Self::datetime_to_file_base_name(datetime)? + ".log2";
+    //    let mut path = path.to_path_buf();
+    //    path.push(file_name);
+    //    Ok(path)
+    //}
     fn file_base_name_to_datetime(filename: &str) -> crate::Result<DateTime> {
         let dt= chrono::NaiveDateTime::parse_from_str(&filename[0 .. 23], "%Y-%m-%dT%H-%M-%S-%3f")?;
         Ok(DateTime::from_naive_datetime(&dt))
@@ -728,44 +753,75 @@ mod tests {
     use std::path::PathBuf;
     use std::thread;
     use flexi_logger::{colored_default_format, colored_detailed_format, Logger};
-    //use env_logger::Logger;
     use log::{info, log};
     use chainpack::{DateTime, make_map, rpcvalue, RpcValue};
     use crate::shvjournal::{Journal, Options};
     use crate::shvlog::{Entry, GetLogParams, LogHeader};
 
-    fn init_log() {
+    const JOURNAL_DIR: &str = "/tmp/shv-rs/journal-test";
+
+    fn init_log() -> crate::Result<()> {
+        //eprintln!("INIT LOG !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
         //let _ = env_logger::builder().is_test(true).try_init();
-        let is_detailed = false;
+        let is_detailed = true;
         match Logger::try_with_env() {
             Ok(logger) => {
-                //println!("flexi logger init OK");
+                //eprintln!("flexi logger init OK");
                 match logger.format(if is_detailed {colored_detailed_format} else {colored_default_format}).start() {
                     Ok(_) => {
-                        //println!("flexi logger started OK")
+                        logShvJournalI!("flexi logger init OK");
                     }
                     Err(_err) => {
                         // ignore double init error
-                        //println!("flexi logger started ERROR: {:?}", err)
+                        //eprintln!("flexi logger started ERROR: {:?}", _err)
                     }
                 }
             }
-            Err(err) => { println!("flexi logger started ERROR: {:?}", err) }
-        }
+            Err(err) => { eprintln!("flexi logger started ERROR: {:?}", err) }
+        };
+        Ok(())
     }
     fn create_journal() -> crate::Result<Journal> {
-        let journal_dir = "/tmp/shv-rs/journal-test";
-        remove_dir_all(journal_dir)?;
         Journal::new(Options {
-            journal_dir: journal_dir.to_string(),
+            journal_dir: JOURNAL_DIR.to_string(),
             file_size_limit: 1024,
             dir_size_limit: 1024 * 5,
         })
     }
+    fn create_test_data() -> crate::Result<Journal> {
+        logShvJournalI!("Creating test data");
+        let try_create_test_data = || -> crate::Result<Journal> {
+            let _ = remove_dir_all(JOURNAL_DIR);
+            let mut journal = create_journal()?;
+            let entry = Entry::new(None, "tc/TC01/status/occupied", true.into());
+            journal.append(&entry)?;
+            let entry = Entry::new(None, "tc/TC01/status/error", false.into());
+            journal.append(&entry)?;
+            thread::sleep(std::time::Duration::from_millis(10));
+            let entry = Entry::new(None, "tc/TC02/status/occupied", true.into());
+            journal.append(&entry)?;
+            let entry = Entry::new(None, "tc/TC02/status/error", false.into());
+            journal.append(&entry)?;
+            let vehicle_detected = make_map![ "vehicleId" => 1234, "direction" => "left" ];
+            let entry = Entry::new(None, "vetra/VET01/vehicleDetected", vehicle_detected.into());
+            journal.append(&entry)?;
+            let entry = Entry::new(None, "tc/TC01/status/occupied", false.into());
+            journal.append(&entry)?;
+            Ok(journal)
+        };
+        match try_create_test_data() {
+            Ok(journal) => Ok(journal),
+            Err(err) => {
+                //let backtrace = err.backtrace();
+                //panic!("Cannot create testing data: {:?}, backtrace: {:?}", err, backtrace)
+                panic!("Cannot create testing data: {:?}", err)
+            }
+        }
+    }
 
     #[test]
-    fn tst_find_last_entry_datetime() {
-        init_log();
+    fn tst_find_last_entry_datetime() -> crate::Result<()> {
+        init_log()?;
         info!("=== Starting test: {}", crate::function!());
         //trace!("{}:{} DDD trace", file!(), line!());
         //debug!("{}:{} DDD trace", file!(), line!());
@@ -781,76 +837,66 @@ mod tests {
         assert_eq!(dt, Some(DateTime::from_epoch_msec(millis0)));
         let dt = Journal::find_last_entry_datetime(&PathBuf::from("tests/shvjournal/corrupted1.log2"));
         assert!(dt.is_err());
+        Ok(())
     }
 
     #[test]
-    fn tst_write_log() -> crate::Result<()> {
-        init_log();
+    fn tst_get_log() -> crate::Result<()> {
+        init_log()?;
+        let mut journal = create_test_data()?;
+        tst_get_log_with_default_params(&mut journal)?;
+        tst_get_log_since_last()?;
+        Ok(())
+    }
+    fn tst_get_log_with_default_params(journal: &mut Journal) -> crate::Result<()> {
         info!("=== Starting test: {}", crate::function!());
-        let mut journal = create_journal()?;
-        let entry = Entry::new(None, "tc/TC01/status/occupied", true.into());
-        journal.append(&entry)?;
-        let entry = Entry::new(None, "tc/TC01/status/error", false.into());
-        journal.append(&entry)?;
-        thread::sleep(std::time::Duration::from_millis(10));
-        let entry = Entry::new(None, "tc/TC02/status/occupied", true.into());
-        journal.append(&entry)?;
-        let entry = Entry::new(None, "tc/TC02/status/error", false.into());
-        journal.append(&entry)?;
-        let vehicle_detected = make_map![ "vehicleId" => 1234, "direction" => "left" ];
-        let entry = Entry::new(None, "vetra/VET01/vehicleDetected", vehicle_detected.into());
-        journal.append(&entry)?;
-        let entry = Entry::new(None, "tc/TC01/status/occupied", false.into());
-        journal.append(&entry)?;
-        let last_log_entry = entry;
-        {
-            info!("--- get log with default params: {}", crate::function!());
-            const EXPECTED_RECORD_COUNT: usize = 6;
-            let params = GetLogParams::new();//.since(DateTime::now().add_days(-1));
-            let log = journal.get_log(&params)?;
-            logShvJournalT!("log: {}", log.to_cpon_indented("\t")?);
-            //println!("log: {}", log.to_cpon_indented("\t")?);
-            let header = LogHeader::from_meta_map(log.meta());
-            assert!(!header.fields.is_empty());
-            assert_eq!(header.record_count, EXPECTED_RECORD_COUNT);
-            assert_eq!(header.record_count_limit_hit, false);
-            assert_eq!(header.with_snapshot, false);
-            assert_eq!(header.path_dict.is_some(), true);
-            assert_eq!(header.path_dict.unwrap().len(), EXPECTED_RECORD_COUNT - 1);
-            assert_eq!(header.since.is_some(), true);
-            assert_ne!(header.since.unwrap().epoch_msec(), 0);
-            assert_eq!(header.until.is_some(), true);
-            assert_ne!(header.until.unwrap().epoch_msec(), 0);
-            let record_list = log.as_list();
-            assert_eq!(record_list.len(), EXPECTED_RECORD_COUNT);
-            let e1 = Entry::from_rpcvalue(record_list.first().unwrap())?;
-            let e2 = Entry::from_rpcvalue(record_list.last().unwrap())?;
-            assert_eq!(header.since.unwrap(), e1.datetime);
-            assert_eq!(header.until.unwrap(), e2.datetime);
-            assert_eq!(last_log_entry.datetime, e2.datetime);
+        const EXPECTED_RECORD_COUNT: usize = 6;
+        let params = GetLogParams::new();//.since(DateTime::now().add_days(-1));
+        let log = journal.get_log(&params)?;
+        logShvJournalT!("log: {}", log.to_cpon_indented("\t")?);
+        //println!("log: {}", log.to_cpon_indented("\t")?);
+        let header = LogHeader::from_meta_map(log.meta());
+        assert!(!header.fields.is_empty());
+        assert_eq!(header.record_count, EXPECTED_RECORD_COUNT);
+        assert_eq!(header.record_count_limit_hit, false);
+        assert_eq!(header.with_snapshot, false);
+        assert_eq!(header.path_dict.is_some(), true);
+        assert_eq!(header.path_dict.unwrap().len(), EXPECTED_RECORD_COUNT - 1);
+        assert_eq!(header.since.is_some(), true);
+        assert_ne!(header.since.unwrap().epoch_msec(), 0);
+        assert_eq!(header.until.is_some(), true);
+        assert_ne!(header.until.unwrap().epoch_msec(), 0);
+        let record_list = log.as_list();
+        assert_eq!(record_list.len(), EXPECTED_RECORD_COUNT);
+        let e1 = Entry::from_rpcvalue(record_list.first().unwrap())?;
+        let e2 = Entry::from_rpcvalue(record_list.last().unwrap())?;
+        assert_eq!(header.since.unwrap(), e1.datetime);
+        assert_eq!(header.until.unwrap(), e2.datetime);
+        Ok(())
+    }
+    fn tst_get_log_since_last() -> crate::Result<()> {
+        info!("=== Starting test: {}", crate::function!());
+        let journal = create_journal()?;
+        const EXPECTED_RECORD_COUNT: usize = 2; // VET01 + TC02/occupied
+        let params = GetLogParams::new()
+            .with_snapshot(true)
+            .with_path_dict(false)
+            .since_last_entry();
+        let log = journal.get_log(&params)?;
+        logShvJournalT!("log: {}", log.to_cpon_indented("\t")?);
+        let header = LogHeader::from_meta_map(log.meta());
+        assert_eq!(header.record_count, EXPECTED_RECORD_COUNT);
+        assert_eq!(header.with_snapshot, true);
+        assert_eq!(header.path_dict.is_none(), true);
+        let record_list = log.as_list();
+        assert_eq!(record_list.len(), EXPECTED_RECORD_COUNT);
+        for rec in record_list {
+            let e = Entry::from_rpcvalue(rec)?;
+            assert_eq!(header.since.unwrap(), e.datetime);
         }
-        {
-            info!("--- get log with snapshot since last: {}", crate::function!());
-            const EXPECTED_RECORD_COUNT: usize = 2; // VET01 + TC02/occupied
-            let params = GetLogParams::new()
-                .with_snapshot(true)
-                .with_path_dict(false)
-                .since_last_entry();
-            let log = journal.get_log(&params)?;
-            logShvJournalT!("log: {}", log.to_cpon_indented("\t")?);
-            let header = LogHeader::from_meta_map(log.meta());
-            assert_eq!(header.record_count, EXPECTED_RECORD_COUNT);
-            assert_eq!(header.with_snapshot, true);
-            assert_eq!(header.path_dict.is_none(), true);
-            let record_list = log.as_list();
-            assert_eq!(record_list.len(), EXPECTED_RECORD_COUNT);
-            for rec in record_list {
-                let e = Entry::from_rpcvalue(rec)?;
-                assert_eq!(header.since.unwrap(), e.datetime);
-            }
-            assert_eq!(last_log_entry.datetime, header.since.unwrap());
-            assert_eq!(last_log_entry.datetime, header.until.unwrap());
-        }
+        let last_log_entry = Entry::from_rpcvalue(record_list.last().unwrap())?;
+        assert_eq!(last_log_entry.datetime, header.since.unwrap());
+        assert_eq!(last_log_entry.datetime, header.until.unwrap());
         Ok(())
     }
 }
