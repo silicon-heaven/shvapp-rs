@@ -903,6 +903,7 @@ mod tests {
         info!("=== Starting test: {}", crate::function!());
         let mut journal = create_journal()?;
         let mut row_count: usize = 0;
+        let mut last_log_entry_datetime = None;
         let mut first_file_entry_datetime: Option<DateTime> = None;
         let now = DateTime::now();
         let reader = JournalReader::new(&PathBuf::from("tests/shvjournal/5k-rows.log2"))?;
@@ -920,11 +921,22 @@ mod tests {
                     new_entry.datetime = datetime;
                     new_entry.value_flags.clear();
                     journal.append(&new_entry)?;
+                    last_log_entry_datetime = Some(new_entry.datetime);
                 }
                 Err(err) => { return Err(err) }
             };
         }
-        logShvJournalD!("row counr: {}", row_count);
+        let last_log_entry_datetime = last_log_entry_datetime.unwrap();
+        logShvJournalD!("row count: {}", row_count);
+        let params = GetLogParams::default()
+            .with_snapshot(false)
+            .with_path_dict(false);
+        let log = journal.get_log(&params)?;
+        logShvJournalD!("last entry datetime: {}", &last_log_entry_datetime);
+        logShvJournalT!("log: {}", log.to_cpon_indented("\t")?);
+        let header = LogHeader::from_meta_map(log.meta());
+        logShvJournalT!("get_log header: {:?}", &header);
+        assert_eq!(last_log_entry_datetime, header.until.unwrap());
         Ok(())
     }
 }
