@@ -53,7 +53,7 @@ struct JournalState {
     files: Vec<i64>,
     journal_dir_size: Option<u64>,
     last_file_size: u64,
-    recent_epoch_datetime: Option<DateTime>,
+    recent_entry_datetime: Option<DateTime>,
 }
 impl JournalState {
     fn is_journal_dir_ok(&self) -> bool {
@@ -61,7 +61,7 @@ impl JournalState {
             && self.journal_dir_size.is_some()
     }
     fn is_consistent(&self) -> bool {
-        self.is_journal_dir_ok() && self.recent_epoch_datetime.is_some()
+        self.is_journal_dir_ok() && self.recent_entry_datetime.is_some()
     }
 }
 
@@ -78,7 +78,7 @@ impl Journal {
                 files: vec![],
                 journal_dir_size: None,
                 last_file_size: 0,
-                recent_epoch_datetime: None
+                recent_entry_datetime: None
             },
         };
         journal.create_state()?;
@@ -89,45 +89,40 @@ impl Journal {
             if self.state.files.is_empty() {
                 logShvJournalD!("Journal dir is empty, creating new one");
                 self.init_journal_dir(&entry.datetime)?;
-                self.create_state()?;
             }
         }
         if !self.state.is_consistent() {
             return Err("Journal state is not consistent, cannot append log entry".into());
         }
         let mut datetime = entry.datetime;
-        if let Some(dt) = self.state.recent_epoch_datetime {
+        if let Some(dt) = self.state.recent_entry_datetime {
             datetime = max(datetime, dt);
         }
-        match self.try_append(entry) {
+        if self.state.last_file_size > self.options.file_size_limit {
+            if &datetime > self.state.recent_entry_datetime.as_ref().expect("must be some here") {
+                // cannot create new file with the same datetime as previous file last entry
+                self.create_new_log_file(&datetime)?;
+            }
+        }
+        match self.try_append(&datetime, entry) {
             Ok(_) => {Ok(())},
             Err(err) => {
                 logShvJournalE!("Append log error: {}, trying to fix it by re-init journal dir", err);
                 self.init_journal_dir(&datetime)?;
-                self.create_state()?;
                 if !self.state.is_consistent() {
                     return Err("Journal state is not consistent even after journal dir re-init, cannot append log entry".into());
                 }
-                self.try_append(entry)
+                self.try_append(&datetime, entry)
             }
         }
     }
-    fn try_append(&mut self, entry: &Entry) -> crate::Result<()> {
+    fn try_append(&mut self, datetime: &DateTime, entry: &Entry) -> crate::Result<()> {
         if !self.state.is_consistent() {
             logShvJournalE!("Append log: Inconsistent journal state");
             return Err("Inconsistent journal state".into());
         }
-        let datetime = max(entry.datetime, self.state.recent_epoch_datetime.unwrap());
-        if self.state.files.is_empty() || self.state.last_file_size > self.options.file_size_limit {
-            // create new file
-            self.create_new_log_file(&datetime)?;
-        }
         let last_file_epoch_msec = *self.state.files.last().unwrap();
         let last_file_path = self.datetime_to_path(&DateTime::from_epoch_msec(last_file_epoch_msec))?;
-        //let mut f = File::open(last_file_path)?;
-        //logShvJournalT!("writing kkt");
-        //f.write_all("kkt\n".as_bytes())?;
-        //logShvJournalT!("writing kkt OK");
         let mut f = OpenOptions::new()
             .write(true)
             .append(true)
@@ -140,10 +135,9 @@ impl Journal {
             let tab: [u8; 1] = ['\t' as u8];
             let lf: [u8; 1] = ['\n' as u8];
             f.write_all(if is_last_field { &lf } else { &tab })?;
-            //line_size += 1;
             Ok(())
         };
-        let b = datetime.to_cpon_string();
+        let b = datetime.to_iso_string();
         write_file(b.as_bytes(), false)?;
         let b: [u8; 0] = []; // uptime skipped
         write_file(&b, false)?;
@@ -167,22 +161,27 @@ impl Journal {
         let dir_size = dir_size + (file_size - orig_file_size);
         self.state.journal_dir_size = Some(dir_size);
         self.state.last_file_size = file_size;
-        self.state.recent_epoch_datetime = Some(datetime);
-        if file_size > self.options.file_size_limit {
+        self.state.recent_entry_datetime = Some(datetime.clone());
+        Ok(())
+    }
+    pub fn create_new_log_file(&mut self, datetime: &DateTime) -> crate::Result<()> {
+        if let Some(recent_entry_datetime) = self.state.recent_entry_datetime {
+            if datetime <= &recent_entry_datetime {
+                return Err("New file datetime must be greater than recent_entry_datetime".into())
+            }
+        }
+        if self.state.journal_dir_size.unwrap_or(0) > self.options.dir_size_limit {
             self.rotate_journal()?;
         }
-        Ok(())
-    }
-    pub fn create_new_log_file(&self, datetime: &DateTime) -> crate::Result<()> {
         let file_path = self.datetime_to_path(datetime)?;
         File::create(file_path)?;
-        Ok(())
+        self.create_state()
     }
     fn rotate_journal(&mut self) -> crate::Result<()> {
-        //logMShvJournal() << "Rotating journal of size:" << m_journalContext.journalSize;
+        logShvJournalD!("Rotating journal of size: {:?}", self.state.journal_dir_size);
         let mut file_cnt = self.state.files.len();
         let mut journal_size = self.state.journal_dir_size.unwrap_or(0);
-        for file_msec in self.state.files.iter() {
+        for file_millis in self.state.files.iter() {
             if file_cnt == 1 {
                 // keep at least one file in case of bad limits configuration
                 break;
@@ -190,15 +189,14 @@ impl Journal {
             if journal_size < self.options.dir_size_limit {
                 break;
             }
-            let file_path = self.datetime_to_path(&DateTime::from_epoch_msec(*file_msec))?;
-            //logMShvJournal() << "\t deleting file:" << fn;
+            let file_path = self.datetime_to_path(&DateTime::from_epoch_msec(*file_millis))?;
+            logShvJournalT!("\tdeleting file: {:?}", &file_path);
             let sz = fs::metadata(&file_path)?.len();
             fs::remove_file(&file_path)?;
             journal_size -= sz;
             file_cnt -= 1;
         }
-        //logMShvJournal() << "New journal of size:" << m_journalContext.journalSize;
-        self.create_state()?;
+        logShvJournalD!("New journal of size: {:?}", self.state.journal_dir_size);
         Ok(())
     }
     pub fn get_log(&self, params: &GetLogParams) -> crate::Result<RpcValue> {
@@ -506,13 +504,13 @@ impl Journal {
         self.create_new_log_file(new_file_datetime)
     }
     fn create_state(&mut self) -> crate::Result<()> {
-        logShvJournalD!("{}", crate::function!());
+        logShvJournalT!("{}", crate::function!());
         self.state = JournalState {
             journal_dir: None,
             files: Vec::new(),
             journal_dir_size: None,
             last_file_size: 0,
-            recent_epoch_datetime: None,
+            recent_entry_datetime: None,
         };
         let journal_dir: PathBuf = self.options.journal_dir.clone().into();
         let mut journal_dir_size: u64 = 0;
@@ -537,7 +535,7 @@ impl Journal {
                     let last_file = self.datetime_to_path(&DateTime::from_epoch_msec(*n))?;
                     logShvJournalT!("last file: {:?} -> millis: {}", last_file, *n);
                     let recent_datetime = Self::find_last_entry_datetime(&last_file)?.unwrap_or(DateTime::from_epoch_msec(*n));
-                    self.state.recent_epoch_datetime = Some(recent_datetime);
+                    self.state.recent_entry_datetime = Some(recent_datetime);
                 }
             }
             Err(_) => {
@@ -755,7 +753,7 @@ mod tests {
     use flexi_logger::{colored_default_format, colored_detailed_format, Logger};
     use log::{info, log};
     use chainpack::{DateTime, make_map, rpcvalue, RpcValue};
-    use crate::shvjournal::{Journal, Options};
+    use crate::shvjournal::{Journal, JournalReader, Options};
     use crate::shvlog::{Entry, GetLogParams, LogHeader};
 
     const JOURNAL_DIR: &str = "/tmp/shv-rs/journal-test";
@@ -782,10 +780,11 @@ mod tests {
         Ok(())
     }
     fn create_journal() -> crate::Result<Journal> {
+        const FILE_SIZE: u64 = 1024 * 10;
         Journal::new(Options {
             journal_dir: JOURNAL_DIR.to_string(),
-            file_size_limit: 1024,
-            dir_size_limit: 1024 * 5,
+            file_size_limit: FILE_SIZE,
+            dir_size_limit: FILE_SIZE * 10,
         })
     }
     fn create_test_data() -> crate::Result<Journal> {
@@ -846,12 +845,13 @@ mod tests {
         let mut journal = create_test_data()?;
         tst_get_log_with_default_params(&mut journal)?;
         tst_get_log_since_last()?;
+        tst_rotate_journal()?;
         Ok(())
     }
     fn tst_get_log_with_default_params(journal: &mut Journal) -> crate::Result<()> {
         info!("=== Starting test: {}", crate::function!());
         const EXPECTED_RECORD_COUNT: usize = 6;
-        let params = GetLogParams::new();//.since(DateTime::now().add_days(-1));
+        let params = GetLogParams::default();//.since(DateTime::now().add_days(-1));
         let log = journal.get_log(&params)?;
         logShvJournalT!("log: {}", log.to_cpon_indented("\t")?);
         //println!("log: {}", log.to_cpon_indented("\t")?);
@@ -878,7 +878,7 @@ mod tests {
         info!("=== Starting test: {}", crate::function!());
         let journal = create_journal()?;
         const EXPECTED_RECORD_COUNT: usize = 2; // VET01 + TC02/occupied
-        let params = GetLogParams::new()
+        let params = GetLogParams::default()
             .with_snapshot(true)
             .with_path_dict(false)
             .since_last_entry();
@@ -897,6 +897,34 @@ mod tests {
         let last_log_entry = Entry::from_rpcvalue(record_list.last().unwrap())?;
         assert_eq!(last_log_entry.datetime, header.since.unwrap());
         assert_eq!(last_log_entry.datetime, header.until.unwrap());
+        Ok(())
+    }
+    fn tst_rotate_journal() -> crate::Result<()> {
+        info!("=== Starting test: {}", crate::function!());
+        let mut journal = create_journal()?;
+        let mut row_count: usize = 0;
+        let mut first_file_entry_datetime: Option<DateTime> = None;
+        let now = DateTime::now();
+        let reader = JournalReader::new(&PathBuf::from("tests/shvjournal/5k-rows.log2"))?;
+        for entry in reader {
+            match entry {
+                Ok(entry) => {
+                    row_count += 1;
+                    if first_file_entry_datetime.is_none() {
+                        first_file_entry_datetime = Some(*&entry.datetime);
+                    }
+                    let millis_diff = *&entry.datetime.epoch_msec() - first_file_entry_datetime.unwrap().epoch_msec();
+                    let datetime = now.add_millis(millis_diff);
+                    let mut new_entry = entry.clone();
+                    //eprintln!("dt: {}", &datetime);
+                    new_entry.datetime = datetime;
+                    new_entry.value_flags.clear();
+                    journal.append(&new_entry)?;
+                }
+                Err(err) => { return Err(err) }
+            };
+        }
+        logShvJournalD!("row counr: {}", row_count);
         Ok(())
     }
 }

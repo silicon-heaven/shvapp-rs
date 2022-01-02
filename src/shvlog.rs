@@ -43,6 +43,9 @@ bitflags! {
     }
 }
 impl EntryValueFlags {
+    pub fn clear(&mut self) {
+        *self = EntryValueFlags::empty();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -148,8 +151,8 @@ pub struct GetLogParams {
     pub with_snapshot: bool,
     pub with_path_dict: bool,
 }
-impl GetLogParams {
-    pub fn new() -> Self {
+impl Default for GetLogParams {
+    fn default() -> Self {
         GetLogParams {
             since: GetLogSince::None,
             until: None,
@@ -160,6 +163,8 @@ impl GetLogParams {
             with_path_dict: true,
         }
     }
+}
+impl GetLogParams {
     pub fn since(mut self, since: DateTime) -> Self { self.since = GetLogSince::Some(since); self }
     pub fn since_last_entry(mut self) -> Self { self.since = GetLogSince::LastEntry; self }
     pub fn until(mut self, until: DateTime) -> Self { self.until = Some(until); self }
