@@ -36,6 +36,17 @@ macro_rules! logShvLogT {
 
 pub const DOMAIN_VAL_CHANGE: &str = "chng";
 
+pub enum LogRecordColumn {
+    DateTime = 0,
+    UpTime,
+    Path,
+    Value,
+    ShortTime,
+    Domain,
+    ValueFlags,
+    UserId,
+}
+
 bitflags! {
     pub struct EntryValueFlags: u8 {
         const SNAPSHOT     = 0b00000001;
@@ -78,44 +89,34 @@ impl Entry {
         false
     }
     pub fn from_rpcvalue(record: &RpcValue) -> crate::Result<Self> {
-        //#[warn(dead_code)]
-        enum Column {
-            DateTime = 0,
-            #[allow(dead_code)]
-            UpTime,
-            Path,
-            Value,
-            ShortTime,
-            Domain,
-            ValueFlags,
-            UserId,
-        }
         let record = record.as_list();
-        let datetime = match record.get(Column::DateTime as usize) {
+        let datetime = match record.get(LogRecordColumn::DateTime as usize) {
             None => { return Err("Record does not contain DateTime column".into()) }
             Some(rv) => { rv.as_datetime() }
         };
-        let path = match record.get(Column::Path as usize) {
+        // uptime is not used anymore
+        let _uptime = record.get(LogRecordColumn::UpTime as usize);
+        let path = match record.get(LogRecordColumn::Path as usize) {
             None => { return Err("Record does not contain Path column".into()) }
             Some(rv) => { rv.to_string() }
         };
-        let value = match record.get(Column::Value as usize) {
+        let value = match record.get(LogRecordColumn::Value as usize) {
             None => { return Err("Record does not contain Value column".into()) }
             Some(rv) => { rv }
         };
-        let short_time = match record.get(Column::ShortTime as usize) {
+        let short_time = match record.get(LogRecordColumn::ShortTime as usize) {
             None => { None }
             Some(rv) => { Some(rv.as_int() as i32) }
         };
-        let domain = match record.get(Column::Domain as usize) {
+        let domain = match record.get(LogRecordColumn::Domain as usize) {
             None => { DOMAIN_VAL_CHANGE.to_string() }
             Some(rv) => { rv.to_string() }
         };
-        let value_flags = match record.get(Column::ValueFlags as usize) {
+        let value_flags = match record.get(LogRecordColumn::ValueFlags as usize) {
             None => { EntryValueFlags::empty() }
             Some(rv) => { EntryValueFlags::from_bits_truncate(rv.as_u64() as u8 ) }
         };
-        let user_id = match record.get(Column::UserId as usize) {
+        let user_id = match record.get(LogRecordColumn::UserId as usize) {
             None => { "".to_string() }
             Some(rv) => { rv.to_string() }
         };
@@ -223,6 +224,7 @@ pub struct LogHeader {
     pub since: Option<DateTime>,
     pub until: Option<DateTime>,
     pub record_count: usize,
+    pub snapshot_count: usize,
     pub record_count_limit: usize,
     pub record_count_limit_hit: bool,
     pub with_snapshot: bool,
@@ -246,6 +248,7 @@ impl LogHeader {
         mm.insert("since", if let Some(dt) = self.since { dt.into() } else { ().into() });
         mm.insert("until", if let Some(dt) = self.until { dt.into() } else { ().into() });
         mm.insert("recordCount", self.record_count.into());
+        mm.insert("snapshotCount", self.snapshot_count.into());
         mm.insert("recordCountLimit", self.record_count_limit.into());
         mm.insert("recordCountLimitHit", self.record_count_limit_hit.into());
         mm.insert("withSnapshot", self.with_snapshot.into());
@@ -289,6 +292,7 @@ impl LogHeader {
             datetime: mm.get("dateTime").unwrap_or(&RpcValue::null()).as_datetime(),
             since: mm.get("since").map(|rv| rv.to_datetime()).flatten(),
             until: mm.get("until").map(|rv| rv.to_datetime()).flatten(),
+            snapshot_count: mm.get("snapshotCount").unwrap_or(&RpcValue::null()).as_usize(),
             record_count: mm.get("recordCount").unwrap_or(&RpcValue::null()).as_usize(),
             record_count_limit: mm.get("recordCountLimit").unwrap_or(&RpcValue::null()).as_usize(),
             record_count_limit_hit: mm.get("recordCountLimitHit").unwrap_or(&RpcValue::null()).as_bool(),

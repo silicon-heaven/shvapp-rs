@@ -56,18 +56,54 @@ struct JournalState {
     recent_entry_datetime: Option<DateTime>,
 }
 impl JournalState {
-    fn is_journal_dir_ok(&self) -> bool {
-        self.journal_dir.is_some()
-            && self.journal_dir_size.is_some()
-    }
     fn is_consistent(&self) -> bool {
-        self.is_journal_dir_ok() && self.recent_entry_datetime.is_some()
+        !self.files.is_empty() && self.recent_entry_datetime.is_some()
     }
 }
-
+struct JournalSnapshot(BTreeMap<String, Entry>);
+impl JournalSnapshot {
+    fn new() -> Self { Self(BTreeMap::new()) }
+    fn len(&self) -> usize { self.0. len() }
+    fn is_empty(&self) -> bool { self.len() == 0 }
+    fn add_entry(&mut self, entry: &Entry) -> bool {
+        if entry.domain != DOMAIN_VAL_CHANGE {
+            //shvDebug() << "remove not CHNG from snapshot:" << RpcValue(entry.toRpcValueMap()).toCpon();
+            return false;
+        }
+        //println!("snapshot entry: {:?}", &entry);
+        if entry.is_value_node_drop() {
+            let mut drop_keys: Vec<String> = vec![];
+            let entry_path = entry.path.clone();
+            let range = self.0.range(entry_path..);
+            for (path, _) in range {
+                if path_starts_with(path, &entry.path) {
+                    // it.key starts with key, then delete it from snapshot
+                    drop_keys.push(path.into());
+                } else {
+                    break;
+                }
+            }
+            for key in drop_keys {
+                self.0.remove(&key);
+            }
+        }
+        else if entry.value.is_default_value() {
+            // writing default value to the snapshot must erase previous value if any
+            if let Some(_) = self.0.get(&entry.path) {
+                self.0.remove(&entry.path);
+            }
+        }
+        else {
+            //snapshot_ctx.last_entry_datetime = Some(*&entry.datetime);
+            self.0.insert((&entry.path).clone(), entry.clone());
+        }
+        true
+    }
+}
 pub struct Journal {
     pub options: Options,
     state: JournalState,
+    snapshot: JournalSnapshot,
 }
 impl Journal {
     pub fn new(options: Options) -> crate::Result<Self> {
@@ -80,6 +116,7 @@ impl Journal {
                 last_file_size: 0,
                 recent_entry_datetime: None
             },
+            snapshot: JournalSnapshot::new(),
         };
         journal.create_state()?;
         Ok(journal)
@@ -109,12 +146,11 @@ impl Journal {
             Err(err) => {
                 logShvJournalE!("Append log error: {}, trying to fix it by re-init journal dir", err);
                 self.init_journal_dir(&datetime)?;
-                if !self.state.is_consistent() {
-                    return Err("Journal state is not consistent even after journal dir re-init, cannot append log entry".into());
-                }
                 self.try_append(&datetime, entry)
             }
-        }
+        }?;
+        self.snapshot.add_entry(entry);
+        Ok(())
     }
     fn try_append(&mut self, datetime: &DateTime, entry: &Entry) -> crate::Result<()> {
         if !self.state.is_consistent() {
@@ -161,7 +197,7 @@ impl Journal {
         let dir_size = dir_size + (file_size - orig_file_size);
         self.state.journal_dir_size = Some(dir_size);
         self.state.last_file_size = file_size;
-        self.state.recent_entry_datetime = Some(datetime.clone());
+        self.state.recent_entry_datetime = Some(*datetime);
         Ok(())
     }
     pub fn create_new_log_file(&mut self, datetime: &DateTime) -> crate::Result<()> {
@@ -175,7 +211,8 @@ impl Journal {
         }
         let file_path = self.datetime_to_path(datetime)?;
         File::create(file_path)?;
-        self.create_state()
+        self.create_state()?;
+        self.write_snapshot(datetime)
     }
     fn rotate_journal(&mut self) -> crate::Result<()> {
         logShvJournalD!("Rotating journal of size: {:?}", self.state.journal_dir_size);
@@ -199,6 +236,21 @@ impl Journal {
         logShvJournalD!("New journal of size: {:?}", self.state.journal_dir_size);
         Ok(())
     }
+    fn write_snapshot(&mut self, datetime: &DateTime) -> crate::Result<()> {
+        let snapshot = self.snapshot.0.clone();
+        for (_, mut entry) in snapshot {
+            entry.datetime = datetime.clone();
+            entry.value_flags.set(EntryValueFlags::SNAPSHOT, true);
+            // erase EVENT flag in the snapshot values,
+            // they can trigger events during reply otherwise
+            entry.value_flags.set(EntryValueFlags::SPONTANEOUS, false);
+            self.try_append(datetime, &entry)?;
+        }
+        if self.state.last_file_size > self.options.file_size_limit {
+           return Err(format!("Snapshot is larger than log file size limit: {}", self.options.file_size_limit).into())
+        }
+        Ok(())
+    }
     pub fn get_log(&self, params: &GetLogParams) -> crate::Result<RpcValue> {
         logShvJournalD!("------------- get_log() ---------------------");
         logShvJournalD!("params: {:?}", params);
@@ -210,7 +262,7 @@ impl Journal {
         let record_count_limit = min(record_count_limit, MAX_GET_LOG_RECORD_COUNT_LIMIT);
         struct SnapshotContext<'a> {
             params: &'a GetLogParams,
-            snapshot: BTreeMap<String, Entry>,
+            snapshot: JournalSnapshot,
             is_snapshot_written: bool,
             last_entry_datetime: Option<DateTime>,
         }
@@ -226,7 +278,7 @@ impl Journal {
         }
         let mut snapshot_context = SnapshotContext {
             params,
-            snapshot: BTreeMap::new(),
+            snapshot: JournalSnapshot(BTreeMap::new()),
             is_snapshot_written: false,
             last_entry_datetime: None,
         };
@@ -249,40 +301,6 @@ impl Journal {
                     log_ctx.max_path_id
                 }
                 Some(n) => {*n}
-            }
-        }
-        fn add_to_snapshot(snapshot_ctx: &mut SnapshotContext, entry: Entry) {
-            if &entry.domain != DOMAIN_VAL_CHANGE {
-                //shvDebug() << "remove not CHNG from snapshot:" << RpcValue(entry.toRpcValueMap()).toCpon();
-                return;
-            }
-            snapshot_ctx.last_entry_datetime = Some(entry.datetime);
-            //println!("snapshot entry: {:?}", &entry);
-            if entry.is_value_node_drop() {
-                let mut drop_keys: Vec<String> = vec![];
-                let entry_path = entry.path.clone();
-                let range = snapshot_ctx.snapshot.range(entry_path..);
-                for (path, _) in range {
-                    if path_starts_with(path, &entry.path) {
-                        // it.key starts with key, then delete it from snapshot
-                        drop_keys.push(path.into());
-                    } else {
-                        break;
-                    }
-                }
-                for key in drop_keys {
-                    snapshot_ctx.snapshot.remove(&key);
-                }
-            }
-            else if entry.value.is_default_value() {
-                // writing default value to the snapshot must erase previous value if any
-                if let Some(_) = snapshot_ctx.snapshot.get(&entry.path) {
-                    snapshot_ctx.snapshot.remove(&entry.path);
-                }
-            }
-            else {
-                //snapshot_ctx.last_entry_datetime = Some(*&entry.datetime);
-                snapshot_ctx.snapshot.insert((&entry.path).clone(), entry);
             }
         }
         fn append_log_entry(log_ctx: &mut LogContext, entry: &Entry) -> bool {
@@ -326,7 +344,7 @@ impl Journal {
                     return Err("Internal error: Cannot have snapshot without since defined".into());
                 }
             };
-            for (_, e) in &snapshot_ctx.snapshot {
+            for (_, e) in &snapshot_ctx.snapshot.0 {
                 let mut entry = e.clone();
                 entry.datetime = snapshot_dt;
                 entry.value_flags.set(EntryValueFlags::SNAPSHOT, true);
@@ -422,7 +440,9 @@ impl Journal {
                     if before_since {
                         //logShvJournalD!("\t SNAPSHOT entry: {}", entry);
                         if params.with_snapshot {
-                            add_to_snapshot(&mut snapshot_context, entry);
+                            if snapshot_context.snapshot.add_entry(&entry) {
+                                snapshot_context.last_entry_datetime = Some(entry.datetime);
+                            }
                         }
                     }
                     else if after_until {
@@ -472,6 +492,7 @@ impl Journal {
             log_params: params.clone(),
             since: log_since,
             until: log_until,
+            snapshot_count: snapshot_context.snapshot.len(),
             record_count: log_context.log.len(),
             record_count_limit,
             record_count_limit_hit: log_context.record_count_limit_hit,
@@ -860,6 +881,7 @@ mod tests {
         assert_eq!(header.record_count, EXPECTED_RECORD_COUNT);
         assert_eq!(header.record_count_limit_hit, false);
         assert_eq!(header.with_snapshot, false);
+        assert_eq!(header.snapshot_count, 0);
         assert_eq!(header.path_dict.is_some(), true);
         assert_eq!(header.path_dict.unwrap().len(), EXPECTED_RECORD_COUNT - 1);
         assert_eq!(header.since.is_some(), true);
@@ -887,6 +909,7 @@ mod tests {
         let header = LogHeader::from_meta_map(log.meta());
         assert_eq!(header.record_count, EXPECTED_RECORD_COUNT);
         assert_eq!(header.with_snapshot, true);
+        assert!(header.snapshot_count > 0);
         assert_eq!(header.path_dict.is_none(), true);
         let record_list = log.as_list();
         assert_eq!(record_list.len(), EXPECTED_RECORD_COUNT);
@@ -906,7 +929,7 @@ mod tests {
         let mut last_log_entry_datetime = None;
         let mut first_file_entry_datetime: Option<DateTime> = None;
         let now = DateTime::now();
-        let reader = JournalReader::new(&PathBuf::from("tests/shvjournal/5k-rows.log2"))?;
+        let reader = JournalReader::new(&PathBuf::from("tests/shvjournal/2k7-rows.log2"))?;
         for entry in reader {
             match entry {
                 Ok(entry) => {
