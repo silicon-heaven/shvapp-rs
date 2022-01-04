@@ -169,6 +169,7 @@ impl GetLogParams {
     pub fn since(mut self, since: DateTime) -> Self { self.since = GetLogSince::Some(since); self }
     pub fn since_last_entry(mut self) -> Self { self.since = GetLogSince::LastEntry; self }
     pub fn until(mut self, until: DateTime) -> Self { self.until = Some(until); self }
+    pub fn record_count_limit(mut self, n: usize) -> Self { self.record_count_limit = Some(n); self }
     pub fn with_snapshot(mut self, b: bool) -> Self { self.with_snapshot = b; self }
     pub fn with_path_dict(mut self, b: bool) -> Self { self.with_path_dict = b; self }
     pub fn from_map(map: &Map) -> Self {
@@ -200,6 +201,34 @@ impl GetLogParams {
             with_path_dict: get_map(map, "withPathsDict", &RpcValue::from(false)).as_bool(),
         }
     }
+    pub fn to_map(&self) -> Map {
+        let mut map = Map::new();
+        match &self.since {
+            GetLogSince::Some(dt) => {
+                map.insert("since".into(), (*dt).into());
+            }
+            GetLogSince::LastEntry => {
+                map.insert("since".into(), "last".into());
+            }
+            GetLogSince::None => {}
+        }
+        if let Some(dt) = &self.until {
+            map.insert("until".into(), (*dt).into());
+        }
+        if let Some(s) = &self.path_pattern {
+            map.insert("pathPattern".into(), s.clone().into());
+            map.insert("pathPatternType".into(), "regex".into());
+        }
+        if let Some(s) = &self.domain_pattern {
+            map.insert("domainPattern".into(), s.clone().into());
+        }
+        if let Some(n) = &self.record_count_limit {
+            map.insert("recordCountLimit".into(), (*n).into());
+        }
+        map.insert("withSnapshot".into(), self.with_snapshot.into());
+        map.insert("withPathsDict".into(), self.with_path_dict.into());
+        map
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -215,7 +244,7 @@ impl LogHeaderField {
 }
 pub type PathDict = BTreeMap<i32, String>;
 #[derive(Debug, Clone)]
-pub struct LogHeader {
+pub struct  LogHeader {
     pub log_version: i32,
     pub device_id: String,
     pub device_type: String,
@@ -247,6 +276,7 @@ impl LogHeader {
         }
         mm.insert("since", if let Some(dt) = self.since { dt.into() } else { ().into() });
         mm.insert("until", if let Some(dt) = self.until { dt.into() } else { ().into() });
+        mm.insert("logParams", self.log_params.to_map().into());
         mm.insert("recordCount", self.record_count.into());
         mm.insert("snapshotCount", self.snapshot_count.into());
         mm.insert("recordCountLimit", self.record_count_limit.into());
