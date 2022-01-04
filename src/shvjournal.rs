@@ -326,7 +326,6 @@ impl Journal {
             return true;
         }
         fn write_snapshot(snapshot_ctx: &mut SnapshotContext, log_ctx: &mut LogContext) -> crate::Result<bool> {
-            //shvWarning() << "write_snapshot, snapshot size:" << snapshot_ctx.snapshot.size();
             logShvJournalD!("\t writing snapshot, record count: {}", snapshot_ctx.snapshot.len());
             if snapshot_ctx.snapshot.is_empty() {
                 return Ok(true);
@@ -370,8 +369,13 @@ impl Journal {
                             i
                         }
                         Err(i) => {
-                            let i = i - 1;
-                            logShvJournalD!("\tnot found, taking previous file: {} {}", i, &self.state.files[i]);
+                            let i = if i > 0 {
+                                logShvJournalD!("\tnot found, taking previous file: {} {}", i, &self.state.files[i]);
+                                i - 1
+                            } else {
+                                logShvJournalD!("\tnot found, taking first file: {} {}", i, &self.state.files[i]);
+                                0
+                            };
                             i
                         }
                     };
@@ -473,7 +477,14 @@ impl Journal {
         // if since is not specified in params
         // then use TS of first file used
         let log_since = match params.since {
-            GetLogSince::Some(since) => { Some(since) }
+            GetLogSince::Some(since) => {
+                match log_context.first_file_datetime {
+                    None => { None }
+                    Some(dt) => {
+                        if dt <= since { Some(since) } else { Some(dt) }
+                    }
+                }
+            }
             GetLogSince::LastEntry => { log_context.last_entry_datetime }
             GetLogSince::None => { log_context.first_file_datetime }
         };
@@ -926,18 +937,18 @@ mod tests {
         info!("=== Starting test: {}", crate::function!());
         let mut journal = create_journal()?;
         let mut row_count: usize = 0;
+        let mut first_log_entry_datetime = None;
         let mut last_log_entry_datetime = None;
-        let mut first_file_entry_datetime: Option<DateTime> = None;
         let now = DateTime::now();
         let reader = JournalReader::new(&PathBuf::from("tests/shvjournal/2k7-rows.log2"))?;
         for entry in reader {
             match entry {
                 Ok(entry) => {
                     row_count += 1;
-                    if first_file_entry_datetime.is_none() {
-                        first_file_entry_datetime = Some(*&entry.datetime);
+                    if first_log_entry_datetime.is_none() {
+                        first_log_entry_datetime = Some(*&entry.datetime);
                     }
-                    let millis_diff = *&entry.datetime.epoch_msec() - first_file_entry_datetime.unwrap().epoch_msec();
+                    let millis_diff = *&entry.datetime.epoch_msec() - first_log_entry_datetime.unwrap().epoch_msec();
                     let datetime = now.add_millis(millis_diff);
                     let mut new_entry = entry.clone();
                     //eprintln!("dt: {}", &datetime);
@@ -952,14 +963,18 @@ mod tests {
         let last_log_entry_datetime = last_log_entry_datetime.unwrap();
         logShvJournalD!("row count: {}", row_count);
         let params = GetLogParams::default()
-            .with_snapshot(false)
-            .with_path_dict(false);
+            .since(first_log_entry_datetime.unwrap())
+            .with_snapshot(true)
+            .with_path_dict(false)
+            .record_count_limit(100);
         let log = journal.get_log(&params)?;
         logShvJournalD!("last entry datetime: {}", &last_log_entry_datetime);
         logShvJournalT!("log: {}", log.to_cpon_indented("\t")?);
         let header = LogHeader::from_meta_map(log.meta());
-        logShvJournalT!("get_log header: {:?}", &header);
-        assert_eq!(last_log_entry_datetime, header.until.unwrap());
+        //logShvJournalT!("get_log header: {}", RpcValue::new(().into(), Some(log.meta().clone())).to_cpon_indented("\t")?);
+        //assert_eq!(last_log_entry_datetime, header.until.unwrap());
+        assert_eq!(header.with_snapshot, true);
+        //assert!(header.snapshot_count > 0);
         Ok(())
     }
 }
