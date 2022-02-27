@@ -1,4 +1,4 @@
-use crate::shvnode::{RequestProcessor, ProcessRequestResult};
+use crate::shvtree::{RequestProcessor, ProcessRequestResult};
 use chainpack::metamethod::{MetaMethod, Signature};
 use chainpack::{RpcValue, metamethod, RpcMessage, RpcMessageMetaTags};
 use chainpack::rpcvalue::List;
@@ -139,8 +139,9 @@ impl RequestProcessor for FSDirRequestProcessor {
         }
         Err(format!("Unknown method '{}' on path '{}'", method, shv_path).into())
     }
-
+    /*
     fn is_dir(&self) -> bool {
         return  true;
     }
+     */
 }

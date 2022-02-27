@@ -5,7 +5,7 @@ mod connection;
 pub mod client;
 
 pub mod utils;
-pub mod shvnode;
+pub mod shvtree;
 pub mod shvfsnode;
 pub mod shvjournal;
 pub mod shvlog;

@@ -9,7 +9,7 @@ use chainpack::metamethod::{MetaMethod};
 
 use shvapp::{Connection, DEFAULT_PORT, shvjournal};
 use shvapp::client::{ClientSender, ConnectionParams};
-use shvapp::shvnode::{TreeNode, NodesTree, RequestProcessor, ProcessRequestResult};
+use shvapp::shvtree::{ShvTree, RequestProcessor, ProcessRequestResult};
 use shvapp::shvfsnode::FSDirRequestProcessor;
 
 use log::{warn, info, debug};
@@ -96,24 +96,17 @@ async fn try_main() -> shvapp::Result<()> {
     connection_params.device_id = device_id.to_string();
     connection_params.mount_point = cli.mount_point.unwrap_or("".to_string());
 
-    let mut root = TreeNode {
-        processor: Some(Box::new(DeviceNodeRequestProcessor {
+    let mut shv_tree = ShvTree::new();
+    shv_tree.add_node("", Box::new(DeviceNodeRequestProcessor {
             app_name: "ShvAgent".into(),
             device_id,
-        })),
-        children: None,
-    };
+        }));
     //let exported_dir = dirs::home_dir();
     if let Some(export_dir) = cli.export_dir {
-        root.add_child_node("fs", TreeNode {
-            processor: Some(Box::new(FSDirRequestProcessor {
+        shv_tree.add_node("fs", Box::new(FSDirRequestProcessor {
                 root: export_dir.into(),
-            })),
-            children: None,
-        }
-        );
+            }));
     }
-    let mut shv_tree = NodesTree::new(root);
     //let mut app_node = ShvAgentAppNode::new();
     //let dyn_app_node = (&mut app_node) as &dyn ShvNode;
     loop {
@@ -174,6 +167,7 @@ async fn try_main() -> shvapp::Result<()> {
                         }
                         Err(e) => {
                             warn!("Read message error: {}.", e);
+                            break;
                         }
                     }
                 }
@@ -261,9 +255,5 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
             }
         }
         Err(format!("Unknown method '{}' on path '{}'", method, shv_path).into())
-    }
-
-    fn is_dir(&self) -> bool {
-        return false;
     }
 }

@@ -1,28 +1,73 @@
-use chainpack::metamethod::{MetaMethod};
-use chainpack::rpcvalue::List;
-use chainpack::{RpcValue, RpcMessage, RpcMessageMetaTags, metamethod};
-use crate::utils;
+use std::collections::{BTreeMap, BTreeSet};
+use flexi_logger::AdaptiveFormat::Default;
+use chainpack::{RpcValue, RpcMessage, RpcMessageMetaTags};
 use log::{debug};
 use crate::client::{ClientSender};
 
 pub type ProcessRequestResult = crate::Result<Option<RpcValue>>;
-pub struct NodesTree {
-    pub root: TreeNode,
+pub trait RequestProcessor {
+    fn process_request(&mut self, client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
+    //fn is_dir(&self) -> bool;
 }
-impl NodesTree {
-    pub fn new(root: TreeNode) -> Self {
-        NodesTree {
-            root
+pub type Node = Box<dyn RequestProcessor>;
+type NodeMap = BTreeMap<String, Node>;
+
+pub struct ShvTree {
+    pub nodemap: NodeMap,
+}
+impl ShvTree {
+    pub fn new() -> Self {
+        ShvTree {
+            nodemap: BTreeMap::new()
         }
+    }
+    pub fn add_node(&mut self, path: &str, node: Node) {
+        self.nodemap.insert(path.into(), node);
+    }
+    pub fn ls(&self, path: &str) -> Vec<String> {
+        let mut dirs: BTreeSet<String> = BTreeSet::new();
+        let mut parent_dir = path.to_string();
+        if !parent_dir.is_empty() {
+            parent_dir.push('/');
+        }
+        for (key, _) in self.nodemap.range(parent_dir.clone() ..) {
+            if key.starts_with(&parent_dir) {
+                if let Some(dir) = key[parent_dir.len()..].split('/').next() {
+                    dirs.insert(dir.to_string());
+                }
+            } else {
+                break;
+            }
+        }
+        dirs.into_iter().collect()
     }
     pub fn process_request(&mut self, client: &ClientSender, request: &RpcMessage) -> ProcessRequestResult  {
         if !request.is_request() {
             return Err("Not request".into());
         }
         debug!("request: {}", request);
-        let shv_path = request.shv_path().unwrap_or("");
-        //let (nd, path_rest) = self.find_node(shv_path)?;
-        self.root.process_request(client,request, shv_path)
+        let mut node_processor_path = String::new();
+        let mut node_dir_path = request.shv_path().unwrap_or("").to_string();
+        loop {
+            if let Some(node) = self.nodemap.get_mut(&node_dir_path) {
+                let result = node.process_request(client, request, &node_processor_path);
+                return result;
+            }
+            if node_dir_path.is_empty() {
+                break;
+            }
+            if let Some(ix) = node_dir_path.rfind('/') {
+                let dir = (&node_dir_path[ix +  1 ..]).to_string();
+                if node_processor_path.is_empty() {
+                    node_processor_path = dir;
+                } else {
+                    node_processor_path += "/";
+                    node_processor_path += &dir;
+                }
+                node_dir_path = (&node_dir_path[0 .. ix]).to_string();
+            }
+        }
+        Err(format!("Invalid request path: '{}'", request.shv_path().unwrap_or("INVALID")).into())
     }
 
     // fn find_node<'a, 'b>(&'a mut self, path: &'b str) -> crate::Result<(&'a mut TreeNode, &'b str)> {
@@ -51,7 +96,41 @@ impl NodesTree {
     // }
 }
 
-pub type RequestProcessorRefType = Box<dyn RequestProcessor>;
+#[cfg(test)]
+mod tests {
+    use chainpack::RpcMessage;
+    use crate::client::ClientSender;
+    use crate::shvtree::{ProcessRequestResult, RequestProcessor, ShvTree};
+
+    struct TestNode {}
+
+    impl RequestProcessor for TestNode {
+        fn process_request(&mut self, client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+            Ok(Some(().into()))
+        }
+    }
+
+    #[test]
+    fn tst_ls() -> crate::Result<()> {
+        let mut tree = ShvTree {
+            nodemap: Default::default()
+        };
+        tree.add_node("a/b/c",Box::new(TestNode {}));
+        tree.add_node("a/1/c",Box::new(TestNode {}));
+        tree.add_node("a/2",Box::new(TestNode {}));
+        tree.add_node("a",Box::new(TestNode {}));
+        tree.add_node("c",Box::new(TestNode {}));
+        tree.add_node("d/b/c1",Box::new(TestNode {}));
+        tree.add_node("d/b/c2",Box::new(TestNode {}));
+        assert_eq!(tree.ls(""), vec!["a", "c", "d"]);
+        assert_eq!(tree.ls("a"), vec!["1", "2", "b"]);
+        assert_eq!(tree.ls("a/b"), vec!["c"]);
+        assert_eq!(tree.ls("d/b"), vec!["c1", "c2"]);
+        assert!(tree.ls("e/b").is_empty());
+        Ok(())
+    }
+}
+/*
 pub struct TreeNode {
     pub processor: Option<RequestProcessorRefType>,
     pub children: Option<Vec<(String, TreeNode)>>,
@@ -145,10 +224,7 @@ impl TreeNode {
         Err(format!("Cannot handle rpc request on path: {}", shv_path).into())
     }
 }
+*/
 
-pub trait RequestProcessor: Send {
-    fn process_request(&mut self, client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
-    fn is_dir(&self) -> bool;
-}
 
 
