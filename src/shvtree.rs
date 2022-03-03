@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use flexi_logger::AdaptiveFormat::Default;
-use chainpack::{RpcValue, RpcMessage, RpcMessageMetaTags};
+use chainpack::{RpcValue, RpcMessage, RpcMessageMetaTags, List};
 use log::{debug};
+use chainpack::metamethod::{Flag, MetaMethod, Signature};
 use crate::client::{ClientSender};
 
 pub type ProcessRequestResult = crate::Result<Option<RpcValue>>;
@@ -9,8 +10,65 @@ pub trait RequestProcessor {
     fn process_request(&mut self, client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
     //fn is_dir(&self) -> bool;
 }
-pub type Node = Box<dyn RequestProcessor>;
-type NodeMap = BTreeMap<String, Node>;
+pub type NodeRef = Box<dyn RequestProcessor>;
+type NodeMap = BTreeMap<String, NodeRef>;
+
+pub struct ShvNode {}
+impl ShvNode {
+    pub fn new_method_dir() -> MetaMethod {
+        MetaMethod {
+            name: "dir".into(),
+            signature: Signature::RetParam,
+            flags: Flag::None.into(),
+            access_grant: RpcValue::from("bws"),
+            description: "dir() or dir(method_name) or dir([method_name, attributes]), calling dir() is the same as calling dir([\"\", 0])".into()
+        }
+    }
+    fn parse_params(params: Option<&RpcValue>) -> (&str, u8) {
+        if let Some(params) = params {
+            let params = params.as_list();
+            if params.is_empty() { ("", 0) }
+            else if params.len() == 1 { (params[0].as_str(), 0) }
+            else { (params[0].as_str(), params[1].as_int() as u8) }
+        } else {
+            ("", 0)
+        }
+    }
+    pub fn dir_result<'a>(methods: impl Iterator<Item = &'a MetaMethod>, params: Option<&RpcValue>) -> RpcValue {
+        let (name, attrs) = ShvNode::parse_params(params);
+        let mut lst = List::new();
+        for method in methods {
+            if name.is_empty() || name == method.name {
+                lst.push(method.to_rpcvalue(attrs));
+            }
+        }
+        lst.into()
+    }
+    pub fn new_method_ls() -> MetaMethod {
+        MetaMethod {
+            name: "ls".into(),
+            signature: Signature::RetParam,
+            flags: Flag::None.into(),
+            access_grant: RpcValue::from("bws"),
+            description: "ls() or ls([\"\", attributes]), calling ls() is the same as calling ls([\"\", 0])".into()
+        }
+    }
+    pub fn ls_result<'a>(dirs: impl Iterator<Item = (&'a String, &'a bool)>, params: Option<&RpcValue>) -> RpcValue {
+        let (name, attrs) = ShvNode::parse_params(params);
+        let mut lst = List::new();
+        for (dir_name, is_dir) in dirs {
+            if name.is_empty() || name == dir_name {
+                if attrs == 0 {
+                    lst.push(dir_name.into());
+                } else {
+                    let dir_lst: List = vec![dir_name.into(), is_dir.into()];
+                    lst.push(dir_lst.into());
+                }
+            }
+        }
+        lst.into()
+    }
+}
 
 pub struct ShvTree {
     pub nodemap: NodeMap,
@@ -21,35 +79,71 @@ impl ShvTree {
             nodemap: BTreeMap::new()
         }
     }
-    pub fn add_node(&mut self, path: &str, node: Node) {
+    pub fn add_node(&mut self, path: &str, node: NodeRef) {
         self.nodemap.insert(path.into(), node);
     }
-    pub fn ls(&self, path: &str) -> Vec<String> {
-        let mut dirs: BTreeSet<String> = BTreeSet::new();
+    fn ls(&self, path: &str) -> Option<BTreeMap<String, bool>> {
+        let mut dirs: BTreeMap<String, bool> = BTreeMap::new();
         let mut parent_dir = path.to_string();
         if !parent_dir.is_empty() {
             parent_dir.push('/');
         }
+        let mut dir_exists = false;
         for (key, _) in self.nodemap.range(parent_dir.clone() ..) {
             if key.starts_with(&parent_dir) {
-                if let Some(dir) = key[parent_dir.len()..].split('/').next() {
-                    dirs.insert(dir.to_string());
+                dir_exists = true;
+                let mut updirs = key[parent_dir.len()..].split('/');
+                if let Some(dir) = updirs.next() {
+                    let dirname = dir.to_string();
+                    let has_children = updirs.next().is_some();
+                    if let Some(val) = dirs.get_mut(&dirname) {
+                        if !*val && has_children {
+                            *val = true;
+                        }
+                    } else {
+                        dirs.insert(dirname, has_children);
+                    }
                 }
             } else {
                 break;
             }
         }
-        dirs.into_iter().collect()
+        if dir_exists {
+            Some(dirs)
+        } else {
+            None
+        }
+    }
+    pub fn is_leaf(&self, path: &str) -> Option<bool> {
+        if let Some(dirs) = self.ls(path) {
+            Some(dirs.is_empty())
+        } else {
+            None
+        }
     }
     pub fn process_request(&mut self, client: &ClientSender, request: &RpcMessage) -> ProcessRequestResult  {
         if !request.is_request() {
             return Err("Not request".into());
         }
         debug!("request: {}", request);
-        let mut node_processor_path = String::new();
-        let mut node_dir_path = request.shv_path().unwrap_or("").to_string();
+        let method = request.method().unwrap_or("");
+        let shv_path = request.shv_path().unwrap_or("");
+        if let Some(dirs) = self.ls(shv_path) {
+            if method == "ls" {
+                return Ok(Some(ShvNode::ls_result(dirs.iter(), request.params())));
+            }
+            if method == "dir" {
+                let DIR = ShvNode::new_method_dir();
+                let LS = ShvNode::new_method_ls();
+                let methods = vec![DIR, LS];
+                return Ok(Some(ShvNode::dir_result(methods.iter(), request.params())));
+            }
+        }
+        let mut slash_ix = shv_path.len();
         loop {
-            if let Some(node) = self.nodemap.get_mut(&node_dir_path) {
+            let node_processor_path = &shv_path[.. slash_ix];
+            let node_dir_path = if slash_ix < shv_path.len() { &shv_path[slash_ix+1 ..] } else { "" };
+            if let Some(node) = self.nodemap.get_mut(&node_dir_path.to_string()) {
                 let result = node.process_request(client, request, &node_processor_path);
                 return result;
             }
@@ -57,14 +151,7 @@ impl ShvTree {
                 break;
             }
             if let Some(ix) = node_dir_path.rfind('/') {
-                let dir = (&node_dir_path[ix +  1 ..]).to_string();
-                if node_processor_path.is_empty() {
-                    node_processor_path = dir;
-                } else {
-                    node_processor_path += "/";
-                    node_processor_path += &dir;
-                }
-                node_dir_path = (&node_dir_path[0 .. ix]).to_string();
+                slash_ix -= node_dir_path.len() - ix;
             }
         }
         Err(format!("Invalid request path: '{}'", request.shv_path().unwrap_or("INVALID")).into())
