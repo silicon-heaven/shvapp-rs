@@ -1,21 +1,19 @@
-use crate::shvtree::{RequestProcessor, ProcessRequestResult, ShvNode};
+use crate::shvtree::{ShvNode, ProcessRequestResult, ShvNodeHelper};
 use chainpack::metamethod::{MetaMethod, Signature};
 use chainpack::{RpcValue, metamethod, RpcMessage, RpcMessageMetaTags};
-use chainpack::rpcvalue::List;
 use std::path::{Path, PathBuf};
 use sha1::{Sha1, Digest};
 use std::{fs};
 use std::collections::BTreeMap;
 use log::{debug};
-use crate::client::{ClientSender};
 
-pub struct FSDirRequestProcessor {
+pub struct FSDirNode {
     pub root: String,
 }
-impl FSDirRequestProcessor {
-    pub fn new(root: &str) -> Self {
+impl FSDirNode {
+    pub fn new(fs_root: &str) -> Self {
         Self {
-            root: root.into(),
+            root: fs_root.into(),
         }
     }
     fn make_absolute_path(&self, path: &str) -> PathBuf {
@@ -43,8 +41,8 @@ impl FSDirRequestProcessor {
     }
 }
 
-impl RequestProcessor for FSDirRequestProcessor {
-    fn process_request(&mut self, _client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+impl ShvNode for FSDirNode {
+    fn process_request(&mut self, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
         const M_DIR: &str = "dir";
         const M_LS: &str = "ls";
@@ -57,8 +55,8 @@ impl RequestProcessor for FSDirRequestProcessor {
         #[allow(non_snake_case)]
         if method == M_DIR {
             //info!("DIR path: {} abs: {:?}", shv_path, self.make_absolute_path(shv_path));
-            let DIR = ShvNode::new_method_dir();
-            let LS = ShvNode::new_method_ls();
+            let DIR = ShvNodeHelper::new_method_dir();
+            let LS = ShvNodeHelper::new_method_ls();
             let READ = MetaMethod { name: M_READ.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("rd")
                 , description: "Read file content".into() };
             let READ_COMPRESSED = MetaMethod { name: M_READ_COMPRESSED.into(), signature: Signature::RetVoid, flags: metamethod::Flag::None.into(), access_grant: RpcValue::from("rd")
@@ -82,13 +80,13 @@ impl RequestProcessor for FSDirRequestProcessor {
                 methods.push(READ);
                 methods.push(READ_COMPRESSED);
             }
-            let res = ShvNode::dir_result(methods.iter(), request.params());
+            let res = ShvNodeHelper::dir_result(methods.iter(), request.params());
             return Ok(Some(res));
         }
         if method == M_LS {
             let path = self.make_absolute_path(shv_path);
             if path.is_dir() {
-                let res = ShvNode::ls_result(self.children2(shv_path)?.iter(), request.params());
+                let res = ShvNodeHelper::ls_result(self.children2(shv_path)?.iter(), request.params());
                 return Ok(Some(res));
             }
             else {

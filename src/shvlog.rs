@@ -261,7 +261,7 @@ pub struct  LogHeader {
     pub fields: Vec<LogHeaderField>,
 }
 impl LogHeader {
-    pub(crate) fn to_meta_map(self) -> MetaMap {
+    pub fn to_meta_map(self) -> MetaMap {
         let mut mm = MetaMap::new();
         mm.insert("logVersion", RpcValue::from(self.log_version));
         let mut device = Map::new();
@@ -294,7 +294,7 @@ impl LogHeader {
         mm.insert("fields", fields.into());
         mm
     }
-    pub(crate) fn from_meta_map(mm: &MetaMap) -> Self {
+    pub fn from_meta_map(mm: &MetaMap) -> Self {
         let (device_id, device_type) = if let Some(device) = mm.get("device") {
             let m = device.as_map();
             (

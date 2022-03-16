@@ -1,20 +1,24 @@
-use std::collections::{BTreeMap, BTreeSet};
-use flexi_logger::AdaptiveFormat::Default;
+use std::collections::{BTreeMap};
+use async_std::channel::{Receiver, Sender};
 use chainpack::{RpcValue, RpcMessage, RpcMessageMetaTags, List};
 use log::{debug};
 use chainpack::metamethod::{Flag, MetaMethod, Signature};
-use crate::client::{ClientSender};
 
 pub type ProcessRequestResult = crate::Result<Option<RpcValue>>;
-pub trait RequestProcessor {
-    fn process_request(&mut self, client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
+pub trait ShvNode {
+    fn process_request(&mut self, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult;
     //fn is_dir(&self) -> bool;
+    //fn set_rpc_response_sender(&mut self, sender: RpcResponseSender);
 }
-pub type NodeRef = Box<dyn RequestProcessor>;
-type NodeMap = BTreeMap<String, NodeRef>;
+pub type RpcResponseSender = Sender<RpcMessage>;
+pub type ShvNodeRef = Box<dyn ShvNode>;
+type NodeMap = BTreeMap<String, ShvNodeRef>;
 
-pub struct ShvNode {}
-impl ShvNode {
+pub struct ShvNodeHelper {
+    //node_id: String,
+    //request_processor: ShvNodeRef,
+}
+impl ShvNodeHelper {
     pub fn new_method_dir() -> MetaMethod {
         MetaMethod {
             name: "dir".into(),
@@ -35,7 +39,7 @@ impl ShvNode {
         }
     }
     pub fn dir_result<'a>(methods: impl Iterator<Item = &'a MetaMethod>, params: Option<&RpcValue>) -> RpcValue {
-        let (name, attrs) = ShvNode::parse_params(params);
+        let (name, attrs) = ShvNodeHelper::parse_params(params);
         let mut lst = List::new();
         for method in methods {
             if name.is_empty() || name == method.name {
@@ -54,7 +58,7 @@ impl ShvNode {
         }
     }
     pub fn ls_result<'a>(dirs: impl Iterator<Item = (&'a String, &'a bool)>, params: Option<&RpcValue>) -> RpcValue {
-        let (name, attrs) = ShvNode::parse_params(params);
+        let (name, attrs) = ShvNodeHelper::parse_params(params);
         let mut lst = List::new();
         for (dir_name, is_dir) in dirs {
             if name.is_empty() || name == dir_name {
@@ -72,14 +76,21 @@ impl ShvNode {
 
 pub struct ShvTree {
     pub nodemap: NodeMap,
+    pub response_sender: RpcResponseSender,
+    pub response_receiver: Receiver<RpcMessage>,
 }
 impl ShvTree {
     pub fn new() -> Self {
+        let (response_sender, response_receiver) = async_std::channel::bounded(10);
         ShvTree {
-            nodemap: BTreeMap::new()
+            nodemap: BTreeMap::new(),
+            response_sender,
+            response_receiver,
         }
     }
-    pub fn add_node(&mut self, path: &str, node: NodeRef) {
+    pub fn add_node(&mut self, path: &str, node: ShvNodeRef) {
+        //let mut node = node;
+        //node.set_rpc_response_sender(self.response_sender.clone());
         self.nodemap.insert(path.into(), node);
     }
     fn ls(&self, path: &str) -> Option<BTreeMap<String, bool>> {
@@ -121,37 +132,43 @@ impl ShvTree {
             None
         }
     }
-    pub fn process_request(&mut self, client: &ClientSender, request: &RpcMessage) -> ProcessRequestResult  {
+    pub fn process_request(&mut self, request: &RpcMessage) -> ProcessRequestResult  {
         if !request.is_request() {
             return Err("Not request".into());
         }
         debug!("request: {}", request);
         let method = request.method().unwrap_or("");
         let shv_path = request.shv_path().unwrap_or("");
-        if let Some(dirs) = self.ls(shv_path) {
-            if method == "ls" {
-                return Ok(Some(ShvNode::ls_result(dirs.iter(), request.params())));
-            }
-            if method == "dir" {
-                let DIR = ShvNode::new_method_dir();
-                let LS = ShvNode::new_method_ls();
-                let methods = vec![DIR, LS];
-                return Ok(Some(ShvNode::dir_result(methods.iter(), request.params())));
-            }
-        }
-        let mut slash_ix = shv_path.len();
+        let mut after_slash_ix = 0;
         loop {
-            let node_processor_path = &shv_path[.. slash_ix];
-            let node_dir_path = if slash_ix < shv_path.len() { &shv_path[slash_ix+1 ..] } else { "" };
+            let node_dir_path;
+            let node_processor_path;
+            let path = &shv_path[after_slash_ix..];
+            if let Some(ix) = path.find('/') {
+                after_slash_ix += ix + 1;
+                node_dir_path = &shv_path[.. (after_slash_ix-1)];
+                node_processor_path = &shv_path[after_slash_ix ..];
+            } else {
+                node_dir_path = shv_path;
+                node_processor_path = "";
+            }
             if let Some(node) = self.nodemap.get_mut(&node_dir_path.to_string()) {
-                let result = node.process_request(client, request, &node_processor_path);
+                let result = node.process_request(request, &node_processor_path);
                 return result;
             }
-            if node_dir_path.is_empty() {
+            if node_processor_path.is_empty() {
                 break;
             }
-            if let Some(ix) = node_dir_path.rfind('/') {
-                slash_ix -= node_dir_path.len() - ix;
+        }
+        if let Some(dirs) = self.ls(shv_path) {
+            if method == "ls" {
+                return Ok(Some(ShvNodeHelper::ls_result(dirs.iter(), request.params())));
+            }
+            if method == "dir" {
+                let dir = ShvNodeHelper::new_method_dir();
+                let ls = ShvNodeHelper::new_method_ls();
+                let methods = vec![dir, ls];
+                return Ok(Some(ShvNodeHelper::dir_result(methods.iter(), request.params())));
             }
         }
         Err(format!("Invalid request path: '{}'", request.shv_path().unwrap_or("INVALID")).into())
@@ -187,12 +204,12 @@ impl ShvTree {
 mod tests {
     use chainpack::RpcMessage;
     use crate::client::ClientSender;
-    use crate::shvtree::{ProcessRequestResult, RequestProcessor, ShvTree};
+    use crate::shvtree::{ProcessRequestResult, ShvNode, ShvTree};
 
     struct TestNode {}
 
-    impl RequestProcessor for TestNode {
-        fn process_request(&mut self, client: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+    impl ShvNode for TestNode {
+        fn process_request(&mut self, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
             Ok(Some(().into()))
         }
     }

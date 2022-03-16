@@ -8,9 +8,9 @@ use chainpack::rpcvalue::List;
 use chainpack::metamethod::{MetaMethod};
 
 use shvapp::{Connection, DEFAULT_PORT, shvjournal};
-use shvapp::client::{ClientSender, ConnectionParams};
-use shvapp::shvtree::{ShvTree, RequestProcessor, ProcessRequestResult};
-use shvapp::shvfsnode::FSDirRequestProcessor;
+use shvapp::client::{ConnectionParams};
+use shvapp::shvtree::{ShvTree, ShvNode, ProcessRequestResult, RpcResponseSender};
+use shvapp::shvfsnode::FSDirNode;
 
 use log::{warn, info, debug};
 
@@ -23,6 +23,7 @@ use async_std::{
     task,
     // future,
 };
+use futures::FutureExt;
 use shvlog::LogConfig;
 
 #[derive(StructOpt, Debug)]
@@ -82,6 +83,7 @@ async fn try_main() -> shvapp::Result<()> {
     log::info!("{} starting up!", std::module_path!());
     log::info!("=====================================================");
     log::info!("Verbosity levels: {}", verbosity_string);
+    log::info!("Exported dir: {}", cli.export_dir.as_ref().unwrap_or(&"".to_string()));
 
     //log::error!("error");
     //log::warn!("warn");
@@ -97,18 +99,17 @@ async fn try_main() -> shvapp::Result<()> {
     connection_params.mount_point = cli.mount_point.unwrap_or("".to_string());
 
     let mut shv_tree = ShvTree::new();
-    shv_tree.add_node("", Box::new(DeviceNodeRequestProcessor {
+    shv_tree.add_node("", Box::new(DeviceNode {
             app_name: "ShvAgent".into(),
             device_id,
+            rpc_sender: shv_tree.response_sender.clone(),
         }));
     //let exported_dir = dirs::home_dir();
     if let Some(export_dir) = cli.export_dir {
-        shv_tree.add_node("fs", Box::new(FSDirRequestProcessor {
+        shv_tree.add_node("fs", Box::new(FSDirNode {
                 root: export_dir.into(),
             }));
     }
-    //let mut app_node = ShvAgentAppNode::new();
-    //let dyn_app_node = (&mut app_node) as &dyn ShvNode;
     loop {
         // Establish a connection
         let addr = format!("{}:{}", connection_params.host, connection_params.port);
@@ -132,44 +133,63 @@ async fn try_main() -> shvapp::Result<()> {
                 if let Some(heartbeat_interval) = connection_params.heartbeat_interval {
                     client.spawn_ping_task(heartbeat_interval);
                 }
+                //let fut_client = client.receive_message();
+                //let fut_nodes = shv_tree.response_receiver.recv();
                 loop {
-                    match client.receive_message().await {
-                        Ok(msg) => {
-                            //info!(target: "rpcmsg", "<== Message arrived: {}", msg);
-                            if msg.is_request() {
-                                let ret_val = shv_tree.process_request(&client.to_sender(),&msg);
-                                if let Ok(None) = ret_val {
-                                    // ret val will be sent async in handler
-                                }
-                                else {
-                                    match msg.prepare_response() {
-                                        Ok(mut resp_msg) => {
-                                            match ret_val {
-                                                Ok(None) => {}
-                                                Ok(Some(rv)) => {
-                                                    resp_msg.set_result(rv);
-                                                    debug!(target: "rpcmsg", "==> Sending response: {}", &resp_msg);
-                                                    client.send_message(&resp_msg).await?;
+                    futures::select! {
+                        msg = client.receive_message().fuse() => {
+                            match msg {
+                                Ok(msg) => {
+                                    //info!(target: "rpcmsg", "<== Message arrived: {}", msg);
+                                    if msg.is_request() {
+                                        let ret_val = shv_tree.process_request(&msg);
+                                        if let Ok(None) = ret_val {
+                                            // ret val will be sent async in handler
+                                        }
+                                        else {
+                                            match msg.prepare_response() {
+                                                Ok(mut resp_msg) => {
+                                                    match ret_val {
+                                                        Ok(None) => {}
+                                                        Ok(Some(rv)) => {
+                                                            resp_msg.set_result(rv);
+                                                            debug!(target: "rpcmsg", "==> Sending response: {}", &resp_msg);
+                                                            client.send_message(&resp_msg).await?;
+                                                        }
+                                                        Err(e) => {
+                                                            resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
+                                                            debug!(target: "rpcmsg", "==> Sending error: {}", &resp_msg);
+                                                            client.send_message(&resp_msg).await?;
+                                                        }
+                                                    }
                                                 }
                                                 Err(e) => {
-                                                    resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string()));
-                                                    debug!(target: "rpcmsg", "==> Sending error: {}", &resp_msg);
-                                                    client.send_message(&resp_msg).await?;
+                                                    warn!("Create response meta error: {}.", e);
                                                 }
                                             }
                                         }
-                                        Err(e) => {
-                                            warn!("Create response meta error: {}.", e);
-                                        }
                                     }
                                 }
+                                Err(e) => {
+                                    warn!("Read client message error: {}.", e);
+                                    break;
+                                }
                             }
-                        }
-                        Err(e) => {
-                            warn!("Read message error: {}.", e);
-                            break;
-                        }
+                        },
+                        msg = shv_tree.response_receiver.recv().fuse() => {
+                            match msg {
+                                Ok(msg) => {
+                                    debug!(target: "rpcmsg", "<== NodesTree message arrived: {}", msg);
+                                    client.send_message(&msg).await?;
+                                }
+                                Err(e) => {
+                                    warn!("Read node message error: {}.", e);
+                                    break;
+                                }
+                            }
+                        },
                     }
+
                 }
             }
             Err(e) => {
@@ -180,13 +200,14 @@ async fn try_main() -> shvapp::Result<()> {
     }
 }
 
-struct DeviceNodeRequestProcessor {
+struct DeviceNode {
     app_name: String,
     device_id: String,
+    rpc_sender: RpcResponseSender,
 }
 
-impl RequestProcessor for DeviceNodeRequestProcessor {
-    fn process_request(&mut self, client_sender: &ClientSender, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+impl ShvNode for DeviceNode {
+    fn process_request(&mut self, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
         let method = request.method().ok_or("Empty method")?;
         if shv_path.is_empty() {
             if method == "dir" {
@@ -212,7 +233,7 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
             if method == "runCmd" {
                 let request = request.clone();
                 // let shv_path = shv_path.to_string();
-                let client_sender = client_sender.clone();
+                let client_sender = self.rpc_sender.clone();
                 task::spawn(async move {
                     async fn run_cmd(request: &RpcMessage) -> shvapp::Result<RpcValue> {
                         let params = request.params().ok_or("No params")?;
@@ -241,7 +262,7 @@ impl RequestProcessor for DeviceNodeRequestProcessor {
                                 Ok(rv) => { resp_msg.set_result(rv); }
                                 Err(e) => { resp_msg.set_error(RpcError::new(RpcErrorCode::MethodCallException, &e.to_string())); }
                             }
-                            match client_sender.send_message(&resp_msg).await {
+                            match client_sender.send(resp_msg).await {
                                 Ok(_) => {}
                                 Err(e) => { warn!("Send response error: {}.", e); }
                             }

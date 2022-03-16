@@ -25,6 +25,9 @@ pub struct Connection {
     buffer: BytesMut,
     from_client: Receiver<RpcFrame>,
     // to_client: (Sender<Frame>, Receiver<Frame>),
+    // we cannot use async-std MPMC channel because only one receiver is notified here
+    // and we need to broadcast message to all the clients
+    // https://docs.rs/async-broadcast/latest/async_broadcast/#difference-with-async-channel
     to_client: async_broadcast::Sender<RpcFrame>,
 }
 
