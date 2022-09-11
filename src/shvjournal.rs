@@ -4,7 +4,7 @@ use std::collections::{BTreeMap};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::str::from_utf8;
+use std::str::{from_utf8_unchecked};
 use regex::Regex;
 use log::log;
 use chainpack::{DateTime, RpcValue, List};
@@ -650,15 +650,12 @@ impl Journal {
             let it = RevLineIterator::new(&buffer[0 .. chunk_length]);
             for line in it {
                 if line.len() > TIMESTAMP_SIZE {
-                    let dt_str = from_utf8(&line[0 .. TIMESTAMP_SIZE])?;
+                    let dt_str = unsafe { from_utf8_unchecked(&line[0 .. TIMESTAMP_SIZE]) };
                     let dt = DateTime::from_iso_str(dt_str);
-                    //println!("{}:{} DDD dt str: {}", file!(), line!(), dt_str);
-                    //let dt = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%dT%H:%M:%S%.3fZ")
-                    //   .map_err(|err| format!("Invalid date-time string: '{}', {}", dt_str, err))?;
                     match dt {
                         Ok(dt) => {return Ok(Some(dt));}
                         Err(_) => {
-                            // invalid timestamp, find previous one
+                            // ignore invalid timestamp, find previous one
                             logShvJournalW!("Invalid timestamp parsed: {}, file: {:?}", dt_str, file);
                         }
                     }

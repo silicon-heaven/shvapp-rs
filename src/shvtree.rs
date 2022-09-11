@@ -94,23 +94,29 @@ impl ShvTree {
         self.nodemap.insert(path.into(), node);
     }
     fn ls(&self, path: &str) -> Option<Vec<(String, bool)>> {
-        let mut parent_dir = path.to_string();
-        if !parent_dir.is_empty() {
-            parent_dir.push('/');
-        }
+        let parent_dir = path.to_string();
         let mut dirs: Vec<(String, bool)> = Vec::new();
         let mut dir_exists = false;
         for (key, _) in self.nodemap.range(parent_dir.clone() ..) {
             if key.starts_with(&parent_dir) {
-                dir_exists = true;
-                let mut updirs = key[parent_dir.len()..].split('/');
-                if let Some(dir) = updirs.next() {
-                    let dirname = dir.to_string();
-                    let has_children = updirs.next().is_some();
-                    if !dirs.is_empty() && dirs.last().unwrap().0 == dirname {
-                        dirs.last_mut().unwrap().1 = true;
-                    } else {
-                        dirs.push((dirname, has_children));
+                let key_bytes = key.as_bytes();
+                let parent_dir_bytes = parent_dir.as_bytes();
+                if parent_dir.is_empty()
+                    || key_bytes.len() == parent_dir_bytes.len()
+                    || key_bytes[parent_dir_bytes.len()] == ('/' as u8) {
+                    dir_exists = true;
+                    if key.len() > parent_dir.len() {
+                        let dir_rest_start = if parent_dir.is_empty() { parent_dir.len() } else { parent_dir.len() + 1 };
+                        let mut updirs = key[dir_rest_start .. ].split('/');
+                        if let Some(dir) = updirs.next() {
+                            let dirname = dir.to_string();
+                            let has_children = updirs.next().is_some();
+                            if !dirs.is_empty() && dirs.last().unwrap().0 == dirname {
+                                dirs.last_mut().unwrap().1 = true;
+                            } else {
+                                dirs.push((dirname, has_children));
+                            }
+                        }
                     }
                 }
             } else {
