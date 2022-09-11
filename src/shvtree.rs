@@ -57,7 +57,7 @@ impl ShvNodeHelper {
             description: "ls() or ls([\"\", attributes]), calling ls() is the same as calling ls([\"\", 0])".into()
         }
     }
-    pub fn ls_result<'a>(dirs: impl Iterator<Item = (&'a String, &'a bool)>, params: Option<&RpcValue>) -> RpcValue {
+    pub fn ls_result<'a>(dirs: impl Iterator<Item = &'a(String, bool)>, params: Option<&RpcValue>) -> RpcValue {
         let (name, attrs) = ShvNodeHelper::parse_params(params);
         let mut lst = List::new();
         for (dir_name, is_dir) in dirs {
@@ -93,12 +93,12 @@ impl ShvTree {
         //node.set_rpc_response_sender(self.response_sender.clone());
         self.nodemap.insert(path.into(), node);
     }
-    fn ls(&self, path: &str) -> Option<BTreeMap<String, bool>> {
-        let mut dirs: BTreeMap<String, bool> = BTreeMap::new();
+    fn ls(&self, path: &str) -> Option<Vec<(String, bool)>> {
         let mut parent_dir = path.to_string();
         if !parent_dir.is_empty() {
             parent_dir.push('/');
         }
+        let mut dirs: Vec<(String, bool)> = Vec::new();
         let mut dir_exists = false;
         for (key, _) in self.nodemap.range(parent_dir.clone() ..) {
             if key.starts_with(&parent_dir) {
@@ -107,12 +107,10 @@ impl ShvTree {
                 if let Some(dir) = updirs.next() {
                     let dirname = dir.to_string();
                     let has_children = updirs.next().is_some();
-                    if let Some(val) = dirs.get_mut(&dirname) {
-                        if !*val && has_children {
-                            *val = true;
-                        }
+                    if !dirs.is_empty() && dirs.last().unwrap().0 == dirname {
+                        dirs.last_mut().unwrap().1 = true;
                     } else {
-                        dirs.insert(dirname, has_children);
+                        dirs.push((dirname, has_children));
                     }
                 }
             } else {
@@ -203,21 +201,24 @@ impl ShvTree {
 #[cfg(test)]
 mod tests {
     use chainpack::RpcMessage;
-    use crate::client::ClientSender;
+    //use crate::client::ClientSender;
     use crate::shvtree::{ProcessRequestResult, ShvNode, ShvTree};
 
     struct TestNode {}
 
     impl ShvNode for TestNode {
-        fn process_request(&mut self, request: &RpcMessage, shv_path: &str) -> ProcessRequestResult {
+        fn process_request(&mut self, _request: &RpcMessage, _shv_path: &str) -> ProcessRequestResult {
             Ok(Some(().into()))
         }
     }
 
     #[test]
     fn tst_ls() -> crate::Result<()> {
+        let (response_sender, response_receiver) = async_std::channel::bounded(10);
         let mut tree = ShvTree {
-            nodemap: Default::default()
+            nodemap: Default::default(),
+            response_sender,
+            response_receiver,
         };
         tree.add_node("a/b/c",Box::new(TestNode {}));
         tree.add_node("a/1/c",Box::new(TestNode {}));
@@ -226,11 +227,14 @@ mod tests {
         tree.add_node("c",Box::new(TestNode {}));
         tree.add_node("d/b/c1",Box::new(TestNode {}));
         tree.add_node("d/b/c2",Box::new(TestNode {}));
-        assert_eq!(tree.ls(""), vec!["a", "c", "d"]);
-        assert_eq!(tree.ls("a"), vec!["1", "2", "b"]);
-        assert_eq!(tree.ls("a/b"), vec!["c"]);
-        assert_eq!(tree.ls("d/b"), vec!["c1", "c2"]);
-        assert!(tree.ls("e/b").is_empty());
+        assert_eq!(tree.ls("").unwrap(), vec![("a".to_string(), true), ("c".to_string(), false), ("d".to_string(), true)]);
+        assert_eq!(tree.ls("a").unwrap(), vec![("1".to_string(), true), ("2".to_string(), false), ("b".to_string(), true)]);
+        assert_eq!(tree.ls("a/b").unwrap(), vec![("c".to_string(), false)]);
+        assert_eq!(tree.ls("d/b").unwrap(), vec![("c1".to_string(), false), ("c2".to_string(), false)]);
+        assert!(tree.ls("c").unwrap().is_empty());
+        assert!(tree.ls("a/2").unwrap().is_empty());
+        assert!(tree.ls("e").is_none());
+        assert!(tree.ls("d/b/a").is_none());
         Ok(())
     }
 }

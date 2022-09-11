@@ -157,6 +157,7 @@ impl Journal {
             logShvJournalE!("Append log: Inconsistent journal state");
             return Err("Inconsistent journal state".into());
         }
+        let recent_entry_datatime = self.state.recent_entry_datetime.unwrap();
         let last_file_epoch_msec = *self.state.files.last().unwrap();
         let last_file_path = self.datetime_to_path(&DateTime::from_epoch_msec(last_file_epoch_msec))?;
         let mut f = OpenOptions::new()
@@ -168,15 +169,26 @@ impl Journal {
             //logShvJournalT!("writing {:?}", data);
             f.write_all(data)?;
             //line_size += data.len();
-            let tab: [u8; 1] = ['\t' as u8];
-            let lf: [u8; 1] = ['\n' as u8];
-            f.write_all(if is_last_field { &lf } else { &tab })?;
+            const TAB: [u8; 1] = ['\t' as u8];
+            const LF: [u8; 1] = ['\n' as u8];
+            f.write_all(if is_last_field { &LF } else { &TAB })?;
             Ok(())
         };
-        let b = datetime.to_iso_string();
-        write_file(b.as_bytes(), false)?;
-        let b: [u8; 0] = []; // uptime skipped
-        write_file(&b, false)?;
+
+        if recent_entry_datatime.epoch_msec() <= datetime.epoch_msec() {
+            let b = datetime.to_iso_string();
+            write_file(b.as_bytes(), false)?;
+            let b: [u8; 0] = []; // skipped for monotonic time
+            write_file(&b, false)?;
+        } else {
+            // log monotonic time in first field
+            let b = recent_entry_datatime.to_iso_string();
+            write_file(b.as_bytes(), false)?;
+            // log non-monotonic log time in second field
+            let b = datetime.to_iso_string();
+            write_file(b.as_bytes(), false)?;
+        }
+
         write_file(entry.path.as_bytes(), false)?;
         let b = entry.value.to_cpon();
         write_file(b.as_bytes(), false)?;
@@ -609,12 +621,19 @@ impl Journal {
         return Ok(dt.format("%Y-%m-%dT%H-%M-%S-%3f").to_string());
     }
     fn find_last_entry_datetime(file: &Path) -> crate::Result<Option<DateTime>> {
-        const SPC: u8 = ' ' as u8;
+        /*
+        foreach chunk from end of file to start
+          foreach line from chunk end to start
+            if is long enough, try to parse date-time
+              if valid date-time is parsed return Some(dt)
+        return None
+         */
+        //const SPC: u8 = ' ' as u8;
         const LF: u8 = '\n' as u8;
-        const CR: u8 = '\r' as u8;
-        const TAB: u8 = '\t' as u8;
+        //const CR: u8 = '\r' as u8;
+        //const TAB: u8 = '\t' as u8;
         const CHUNK_SIZE: usize = 1024;
-        const TIMESTAMP_SIZE: usize = "2021-12-13T12-13-14-456Z".len() as usize;
+        const TIMESTAMP_SIZE: usize = "2021-12-13T12:13:14.456Z".len() as usize;
         let mut buffer = vec![0u8; CHUNK_SIZE + TIMESTAMP_SIZE];
         let mut f = File::open(file)?;
         let file_size = f.metadata()?.len() as usize;
@@ -623,42 +642,60 @@ impl Journal {
             // empty file without data
             return Ok(None);
         }
-        let mut start_pos = if file_size < CHUNK_SIZE { 0 } else { file_size - CHUNK_SIZE } as usize;
+        let mut start_pos = file_size;
         loop {
+            start_pos = if start_pos < buffer.len() { 0 } else { start_pos - buffer.len() };
             f.seek(std::io::SeekFrom::Start(start_pos as u64))?;
             let read_count = f.read(&mut buffer)? as usize;
             // remove trailing blanks, like trailing '\n' in log file
-            let mut pos = read_count;
-            while pos > 0 {
-                let c = buffer[pos - 1];
-                if !(c == LF || c == CR || c == TAB || c == SPC || c == 0) {
-                    break;
-                }
-                pos -= 1;
-            }
-            if pos < TIMESTAMP_SIZE {
+            //while pos > 0 {
+            //    let c = buffer[pos - 1];
+            //    if !(c == LF || c == CR || c == TAB || c == SPC || c == 0) {
+            //        break;
+            //    }
+            //    pos -= 1;
+            //}
+            if read_count < TIMESTAMP_SIZE {
                 return Err(format!("Corrupted log file, cannot find complete timestamp from pos: {} of file size: {} in file: {:?}", start_pos, file_size, file).into())
             }
-            while pos > 0 {
-                let c = buffer[pos - 1];
-                if c == LF || pos == 1 {
-                    if pos == 1  {
-                        pos = 0;
+            let mut lf_pos = read_count - 1;
+            loop {
+                let dt_pos = if lf_pos == 0 && start_pos == 0 {
+                    Some(0)
+                } else if buffer[lf_pos] == LF  {
+                    let dt_pos = lf_pos + 1;
+                    if dt_pos + TIMESTAMP_SIZE <= read_count {
+                        Some(dt_pos)
+                    } else {
+                        None
                     }
+                } else {
+                    None
+                };
+                if let Some(dt_pos) = dt_pos {
                     // try to read timestamp
-                    let dt_str = from_utf8(&buffer[pos..pos + TIMESTAMP_SIZE])?;
-                    let dt = DateTime::from_iso_str(dt_str)?;
+                    let dt_str = from_utf8(&buffer[dt_pos..dt_pos + TIMESTAMP_SIZE])?;
+                    let dt = DateTime::from_iso_str(dt_str);
                     //println!("{}:{} DDD dt str: {}", file!(), line!(), dt_str);
                     //let dt = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%dT%H:%M:%S%.3fZ")
                      //   .map_err(|err| format!("Invalid date-time string: '{}', {}", dt_str, err))?;
-                    return Ok(Some(dt))
+                    match dt {
+                        Ok(dt) => {return Ok(Some(dt));}
+                        Err(_) => {
+                            // invalid timestamp, find previous one
+                            logShvJournalW!("Invalid timestamp parsed: {}, file: {:?}", dt_str, file);
+                        }
+                    }
                 }
-                pos -= 1;
+                if lf_pos == 0 {
+                    break;
+                }
+                lf_pos -= 1;
             }
             if start_pos == 0 {
                 return Err(format!("Corrupted log file, cannot find complete timestamp from pos: {} of file size: {} in file: {:?}", start_pos, file_size, file).into())
             }
-            start_pos -= cmp::max(CHUNK_SIZE, start_pos);
+            start_pos -= cmp::min(CHUNK_SIZE, start_pos);
         }
     }
     pub fn test() {
@@ -790,7 +827,7 @@ mod tests {
 
     const JOURNAL_DIR: &str = "/tmp/shv-rs/journal-test";
 
-    fn init_log() -> crate::Result<()> {
+    fn init_flexi_log() -> crate::Result<()> {
         //eprintln!("INIT LOG !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
         //let _ = env_logger::builder().is_test(true).try_init();
         let is_detailed = true;
@@ -852,7 +889,7 @@ mod tests {
 
     #[test]
     fn tst_find_last_entry_datetime() -> crate::Result<()> {
-        init_log()?;
+        init_flexi_log()?;
         info!("=== Starting test: {}", crate::function!());
         //trace!("{}:{} DDD trace", file!(), line!());
         //debug!("{}:{} DDD trace", file!(), line!());
@@ -866,14 +903,14 @@ mod tests {
         let millis0 = 1637513675023i64;
         let dt = Journal::find_last_entry_datetime(&PathBuf::from("tests/shvjournal/regular.log2")).unwrap();
         assert_eq!(dt, Some(DateTime::from_epoch_msec(millis0)));
-        let dt = Journal::find_last_entry_datetime(&PathBuf::from("tests/shvjournal/corrupted1.log2"));
-        assert!(dt.is_err());
+        let dt = Journal::find_last_entry_datetime(&PathBuf::from("tests/shvjournal/corrupted1.log2")).unwrap();
+        assert_eq!(dt, DateTime::from_iso_str("1970-01-01T00:00:01.234Z").ok());
         Ok(())
     }
 
     #[test]
     fn tst_get_log() -> crate::Result<()> {
-        init_log()?;
+        init_flexi_log()?;
         let mut journal = create_test_data()?;
         tst_get_log_with_default_params(&mut journal)?;
         tst_get_log_since_last()?;

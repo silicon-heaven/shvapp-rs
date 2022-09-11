@@ -4,7 +4,6 @@ use chainpack::{RpcValue, metamethod, RpcMessage, RpcMessageMetaTags};
 use std::path::{Path, PathBuf};
 use sha1::{Sha1, Digest};
 use std::{fs};
-use std::collections::BTreeMap;
 use log::{debug};
 
 pub struct FSDirNode {
@@ -20,10 +19,10 @@ impl FSDirNode {
         Path::new(&self.root).join(path)
     }
 
-    fn children2(&self, path: &str) -> crate::Result<BTreeMap<String, bool>> {
+    fn children2(&self, path: &str) -> crate::Result<Vec<(String, bool)>> {
         let mut pb = self.make_absolute_path(path);
         if pb.is_dir() {
-            let mut ret = BTreeMap::new();
+            let mut ret = Vec::new();
             for entry in pb.read_dir()? {
                 if let Ok(entry) = entry {
                     pb.push(entry.file_name());
@@ -32,12 +31,12 @@ impl FSDirNode {
                     debug!("------------------------------------------- {} is dir: {}", fname, is_dir);
                     //let e = (fname, is_dir);
                     pb.pop();
-                    ret.insert(fname, is_dir);
+                    ret.push((fname, is_dir));
                 }
             }
             return Ok(ret);
         }
-        return Ok(BTreeMap::new());
+        return Ok(Vec::new());
     }
 }
 
