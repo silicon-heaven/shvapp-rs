@@ -180,6 +180,7 @@ impl Journal {
             write_file(b.as_bytes(), false)?;
             let b: [u8; 0] = []; // skipped for monotonic time
             write_file(&b, false)?;
+            self.state.recent_entry_datetime = Some(*datetime);
         } else {
             // log monotonic time in first field
             let b = recent_entry_datatime.to_iso_string();
@@ -209,7 +210,6 @@ impl Journal {
         let dir_size = dir_size + (file_size - orig_file_size);
         self.state.journal_dir_size = Some(dir_size);
         self.state.last_file_size = file_size;
-        self.state.recent_entry_datetime = Some(*datetime);
         Ok(())
     }
     pub fn create_new_log_file(&mut self, datetime: &DateTime) -> crate::Result<()> {
