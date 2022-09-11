@@ -363,7 +363,7 @@ pub struct LogEntries<'a> {
 impl Iterator for LogEntries<'_> {
     type Item = crate::Result<Entry>;
 
-    fn next(&mut self) -> Option<crate::Result<Entry>> {
+    fn next(&mut self) -> Option<Self::Item> {
         return match self.records.get(self.pos) {
             None => { None }
             Some(rv) => {

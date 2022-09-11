@@ -1,4 +1,4 @@
-use std::{cmp, fs};
+use std::{fs};
 use std::cmp::{max, min};
 use std::collections::{BTreeMap};
 use std::fs::{File, OpenOptions};
@@ -620,6 +620,7 @@ impl Journal {
             .ok_or(format!("Invalid epoch millis value: {}", millis))?;
         return Ok(dt.format("%Y-%m-%dT%H-%M-%S-%3f").to_string());
     }
+
     fn find_last_entry_datetime(file: &Path) -> crate::Result<Option<DateTime>> {
         /*
         foreach chunk from end of file to start
@@ -628,10 +629,6 @@ impl Journal {
               if valid date-time is parsed return Some(dt)
         return None
          */
-        //const SPC: u8 = ' ' as u8;
-        const LF: u8 = '\n' as u8;
-        //const CR: u8 = '\r' as u8;
-        //const TAB: u8 = '\t' as u8;
         const CHUNK_SIZE: usize = 1024;
         const TIMESTAMP_SIZE: usize = "2021-12-13T12:13:14.456Z".len() as usize;
         let mut buffer = vec![0u8; CHUNK_SIZE + TIMESTAMP_SIZE];
@@ -642,43 +639,22 @@ impl Journal {
             // empty file without data
             return Ok(None);
         }
-        let mut start_pos = file_size;
+        let mut chunk_start_pos = file_size;
         loop {
-            start_pos = if start_pos < buffer.len() { 0 } else { start_pos - buffer.len() };
-            f.seek(std::io::SeekFrom::Start(start_pos as u64))?;
-            let read_count = f.read(&mut buffer)? as usize;
-            // remove trailing blanks, like trailing '\n' in log file
-            //while pos > 0 {
-            //    let c = buffer[pos - 1];
-            //    if !(c == LF || c == CR || c == TAB || c == SPC || c == 0) {
-            //        break;
-            //    }
-            //    pos -= 1;
-            //}
-            if read_count < TIMESTAMP_SIZE {
-                return Err(format!("Corrupted log file, cannot find complete timestamp from pos: {} of file size: {} in file: {:?}", start_pos, file_size, file).into())
+            chunk_start_pos = if chunk_start_pos < buffer.len() { 0 } else { chunk_start_pos - buffer.len() };
+            f.seek(std::io::SeekFrom::Start(chunk_start_pos as u64))?;
+            let chunk_length = f.read(&mut buffer)? as usize;
+            if chunk_length < TIMESTAMP_SIZE {
+                return Err(format!("Corrupted log file, cannot find complete timestamp from pos: {} of file size: {} in file: {:?}", chunk_start_pos, file_size, file).into())
             }
-            let mut lf_pos = read_count - 1;
-            loop {
-                let dt_pos = if lf_pos == 0 && start_pos == 0 {
-                    Some(0)
-                } else if buffer[lf_pos] == LF  {
-                    let dt_pos = lf_pos + 1;
-                    if dt_pos + TIMESTAMP_SIZE <= read_count {
-                        Some(dt_pos)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-                if let Some(dt_pos) = dt_pos {
-                    // try to read timestamp
-                    let dt_str = from_utf8(&buffer[dt_pos..dt_pos + TIMESTAMP_SIZE])?;
+            let it = RevLineIterator::new(&buffer[0 .. chunk_length]);
+            for line in it {
+                if line.len() > TIMESTAMP_SIZE {
+                    let dt_str = from_utf8(&line[0 .. TIMESTAMP_SIZE])?;
                     let dt = DateTime::from_iso_str(dt_str);
                     //println!("{}:{} DDD dt str: {}", file!(), line!(), dt_str);
                     //let dt = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%dT%H:%M:%S%.3fZ")
-                     //   .map_err(|err| format!("Invalid date-time string: '{}', {}", dt_str, err))?;
+                    //   .map_err(|err| format!("Invalid date-time string: '{}', {}", dt_str, err))?;
                     match dt {
                         Ok(dt) => {return Ok(Some(dt));}
                         Err(_) => {
@@ -687,15 +663,10 @@ impl Journal {
                         }
                     }
                 }
-                if lf_pos == 0 {
-                    break;
-                }
-                lf_pos -= 1;
             }
-            if start_pos == 0 {
-                return Err(format!("Corrupted log file, cannot find complete timestamp from pos: {} of file size: {} in file: {:?}", start_pos, file_size, file).into())
+            if chunk_start_pos == 0 {
+                return Err(format!("Corrupted log file, cannot find complete timestamp from pos: {} of file size: {} in file: {:?}", chunk_start_pos, file_size, file).into())
             }
-            start_pos -= cmp::min(CHUNK_SIZE, start_pos);
         }
     }
     pub fn test() {
@@ -814,8 +785,9 @@ fn path_starts_with(path: &str, with: &str) -> bool {
     }
     return false
 }
+
 #[cfg(test)]
-mod tests {
+mod tests1 {
     use std::fs::remove_dir_all;
     use std::path::PathBuf;
     use std::thread;
@@ -1012,6 +984,80 @@ mod tests {
         //assert_eq!(last_log_entry_datetime, header.until.unwrap());
         assert_eq!(header.with_snapshot, true);
         //assert!(header.snapshot_count > 0);
+        Ok(())
+    }
+}
+
+struct RevLineIterator<'a> {
+    buff: &'a [u8],
+    pos: isize,
+}
+impl RevLineIterator<'_> {
+    pub fn new(buff: &'_ [u8]) -> RevLineIterator<'_> {
+        RevLineIterator {
+            buff,
+            pos: if buff.is_empty() { -1 } else { buff.len() as isize },
+        }
+    }
+}
+impl<'a> Iterator for RevLineIterator<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        const LF: u8 = '\n' as u8;
+        if self.pos < 0 {
+            return None;
+        }
+        let prev_pos = self.pos as usize;
+        loop {
+            self.pos -= 1;
+            if self.pos < 0 {
+                return Some(&self.buff[0 .. prev_pos]);
+            }
+            if self.buff[self.pos as usize] == LF {
+                return Some(&self.buff[(self.pos + 1) as usize .. prev_pos]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests2 {
+    use crate::shvjournal::RevLineIterator;
+
+    #[test]
+    fn tst_rev_line_iterator() -> crate::Result<()> {
+
+        let lines = "".as_bytes();
+        let mut it = RevLineIterator::new(lines);
+        assert_eq!(it.next(), None);
+
+        let lines = "\n".as_bytes();
+        let mut it = RevLineIterator::new(lines);
+        assert_eq!(it.next().unwrap(), "".as_bytes());
+        assert_eq!(it.next().unwrap(), "".as_bytes());
+        assert_eq!(it.next(), None);
+
+        let lines = "\nfoo".as_bytes();
+        let mut it = RevLineIterator::new(lines);
+        assert_eq!(it.next().unwrap(), "foo".as_bytes());
+        assert_eq!(it.next().unwrap(), "".as_bytes());
+        assert_eq!(it.next(), None);
+
+        let lines = "foo\n\n".as_bytes();
+        let mut it = RevLineIterator::new(lines);
+        assert_eq!(it.next().unwrap(), "".as_bytes());
+        assert_eq!(it.next().unwrap(), "".as_bytes());
+        assert_eq!(it.next().unwrap(), "foo".as_bytes());
+        assert_eq!(it.next(), None);
+
+        let lines = "foo\nbar\nbaz".as_bytes();
+        let mut it = RevLineIterator::new(lines);
+        assert_eq!(it.next().unwrap(), "baz".as_bytes());
+        assert_eq!(it.next().unwrap(), "bar".as_bytes());
+        assert_eq!(it.next().unwrap(), "foo".as_bytes());
+        assert_eq!(it.next(), None);
+
         Ok(())
     }
 }
