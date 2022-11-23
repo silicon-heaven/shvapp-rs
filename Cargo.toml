@@ -39,3 +39,6 @@ chainpack = { git = "https://github.com/silicon-heaven/chainpack-rs", branch = "
 [[bin]]
 name = "shvagent"
 
+[[bin]]
+name = "shvcall"
+
