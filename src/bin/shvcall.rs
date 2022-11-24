@@ -1,3 +1,4 @@
+use async_std::{io,prelude::*};
 use structopt::StructOpt;
 use std::env;
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue};
@@ -35,6 +36,8 @@ struct Cli {
     verbosity: Vec<String>,
     #[structopt(short, long, help = "Log levels for modules, for example: client:W or :T, default is :W if not specified")]
     debug: Vec<String>,
+    #[structopt(short = "-x", long = "--chainpack", help = "Output as Chainpack instead of default CPON")]
+    chainpack: bool,
 }
 
 // const DEFAULT_RPC_TIMEOUT_MSEC: u64 = 5000;
@@ -84,7 +87,14 @@ async fn try_main() -> shvapp::Result<()> {
 
     while let Ok(response) = client.receive_message().await {
         if response.request_id() == request_id {
-            println!("{}", response);
+            let mut stdout = io::stdout();
+            let response_bytes = if cli.chainpack {
+                response.as_rpcvalue().to_chainpack()
+            } else {
+                response.to_cpon().into_bytes()
+            };
+            stdout.write_all(&response_bytes).await?;
+            stdout.flush().await?;
             break;
         }
     }
