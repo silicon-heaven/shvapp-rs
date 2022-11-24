@@ -33,9 +33,12 @@ lz-fear = "0.1.1"
 #env_logger = "0.9"
 flexi_logger = { version = "0.23.2" }
 
-shvlog = { path = "../shvlog" }
-chainpack = { path = "../chainpack" }
+shvlog = { git = "https://github.com/silicon-heaven/shvlog-rs", branch = "master" }
+chainpack = { git = "https://github.com/silicon-heaven/chainpack-rs", branch = "master" }
 
 [[bin]]
 name = "shvagent"
+
+[[bin]]
+name = "shvcall"
 
