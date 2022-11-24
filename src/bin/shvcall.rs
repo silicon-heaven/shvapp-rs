@@ -68,13 +68,10 @@ async fn try_main() -> shvapp::Result<()> {
     // This is necessary in order to receive messages
     task::spawn(async move {
         info!("Spawning connection message loop");
-        match connection.exec().await {
-            Ok(_) => {
-                info!("Connection message loop finished Ok");
-            }
-            Err(e) => {
-                warn!("Connection message loop finished with error: {}", e);
-            }
+        if let Err(e) = connection.exec().await {
+            warn!("Connection message loop finished with error: {}", e);
+        } else {
+            info!("Connection message loop finished Ok");
         }
     });
 
