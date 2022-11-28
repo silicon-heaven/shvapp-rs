@@ -1,5 +1,7 @@
 pub use chainpack::rpcframe::RpcFrame;
 pub use connection::Connection;
+// pub use connection::AsyncRW;
+pub use connection::AsyncRWBox;
 
 mod connection;
 pub mod client;
@@ -13,7 +15,7 @@ pub mod shvlog;
 /// Default port that a redis server listens on.
 ///
 /// Used if no port is specified.
-pub const DEFAULT_PORT: &str = "3755";
+pub const DEFAULT_PORT: u16 = 3755;
 
 /// Error returned by most functions.
 ///

@@ -6,11 +6,10 @@ use log::{debug, error};
 use async_std::{
     channel::{Receiver},
     // io::{stdin, BufReader, BufWriter},
-    net::{TcpStream},
     prelude::*,
     // task,
 };
-use futures::{select, FutureExt};
+use futures::{select, FutureExt, AsyncWrite, AsyncRead};
 use async_broadcast::{broadcast};
 
 enum LogFramePrompt {
@@ -18,9 +17,14 @@ enum LogFramePrompt {
     Receive,
 }
 
+pub trait AsyncRW: AsyncRead + AsyncWrite {}
+impl<T> AsyncRW for T where T: AsyncRead + AsyncWrite {}
+
+pub type AsyncRWBox = Box<dyn AsyncRW + Unpin + Send>;
+
 //#[derive(Debug)]
 pub struct Connection {
-    stream: TcpStream,
+    stream: AsyncRWBox,
     // The buffer for reading frames.
     buffer: BytesMut,
     from_client: Receiver<RpcFrame>,
@@ -32,7 +36,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn new(stream: TcpStream, protocol: Protocol) -> (Connection, Client) {
+    pub fn new(stream: AsyncRWBox, protocol: Protocol) -> (Connection, Client) {
         // to_client_capacity 1 should be sufficient, the socket reader will be blocked
         // if the channel will be full (in case of async_broadcast implementation).
         // If some client will not read receive end, then whole app will be blocked !!!

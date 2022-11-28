@@ -20,52 +20,57 @@ use log::{trace, debug, info, warn, error};
 
 const DEFAULT_RPC_CALL_TIMEOUT_MS: u64 = 5000;
 
-#[derive(Copy, Clone)]
-pub enum PasswordType {
+#[derive(Copy, Clone, Debug)]
+pub enum LoginType {
     PLAIN,
     SHA1
 }
-impl PasswordType {
+impl LoginType {
     pub fn to_str(&self) -> &str {
         match self {
-            PasswordType::PLAIN => "PLAIN",
-            PasswordType::SHA1 => "SHA1",
+            LoginType::PLAIN => "PLAIN",
+            LoginType::SHA1 => "SHA1",
         }
     }
 }
 
-#[derive(Clone)]
-pub struct ConnectionParams {
-    pub host: String,
-    pub port: u16,
+pub enum Scheme {
+    Tcp,
+    LocalSocket,
+}
+
+#[derive(Clone, Debug)]
+pub struct LoginParams {
     pub user: String,
     pub password: String,
-    pub password_type: PasswordType,
+    pub login_type: LoginType,
     pub device_id: String,
     pub mount_point: String,
     pub heartbeat_interval: Option<Duration>,
-    pub protocol: Protocol,
+    //pub protocol: Protocol,
 }
-impl ConnectionParams {
-    pub fn new(host: &str, port: u16, user: &str, password: &str) -> ConnectionParams {
-        ConnectionParams {
-            host: host.into(),
-            port,
-            user: user.into(),
-            password: password.into(),
-            password_type: if user.len() == 40 { PasswordType::SHA1} else { PasswordType::PLAIN },
-            device_id: "".into(),
-            mount_point: "".into(),
+
+impl Default for LoginParams {
+    fn default() -> Self {
+        LoginParams {
+            user: "".to_string(),
+            password: "".to_string(),
+            login_type: LoginType::SHA1,
+            device_id: "".to_string(),
+            mount_point: "".to_string(),
             heartbeat_interval: Some(Duration::from_secs(60)),
-            protocol: Protocol::ChainPack,
+            //protocol: Protocol::ChainPack,
         }
     }
+}
+
+impl LoginParams {
     fn to_rpcvalue(&self) -> RpcValue {
         let mut map = chainpack::rpcvalue::Map::new();
         let mut login = chainpack::rpcvalue::Map::new();
         login.insert("user".into(), RpcValue::from(&self.user));
         login.insert("password".into(), RpcValue::from(&self.password));
-        login.insert("type".into(), RpcValue::from(self.password_type.to_str()));
+        login.insert("type".into(), RpcValue::from(self.login_type.to_str()));
         map.insert("login".into(), RpcValue::from(login));
         let mut options = chainpack::rpcvalue::Map::new();
         if let Some(hbi) = self.heartbeat_interval {
@@ -85,7 +90,21 @@ impl ConnectionParams {
         RpcValue::from(map)
     }
 }
-
+/*
+#[derive(Clone, Debug)]
+pub struct ConnectionParams {
+    pub url: Url,
+    pub login_params: LoginParams,
+}
+impl ConnectionParams {
+    pub fn new(url: Url, login_params: LoginParams) -> ConnectionParams {
+        ConnectionParams {
+            url,
+            login_params,
+        }
+    }
+}
+*/
 pub type ClientTx = Sender<RpcFrame>;
 pub type ClientRx = async_broadcast::Receiver<RpcFrame>;
 
@@ -103,16 +122,15 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn login(&mut self, login_params: &ConnectionParams) -> crate::Result<()> {
+    pub async fn login(&mut self, login_params: &LoginParams) -> crate::Result<()> {
         let hello_resp = self.call_rpc_method(RpcMessage::create_request("", "hello", None)).await?;
         debug!("hello resp {}", hello_resp);
         let mut login_params = login_params.clone();
-        if login_params.password.len() != 40 {
+        if let LoginType::SHA1  = login_params.login_type {
             if let Some(result) = hello_resp.result() {
                 if let Some(nonce) = result.as_map().get("nonce") {
-                    let hash = crate::utils::sha1_password_hash(login_params.password.as_str().as_bytes(), nonce.as_str().as_bytes());
+                    let hash = crate::utils::sha1_password_hash(login_params.password.as_bytes(), nonce.as_str().as_bytes());
                     login_params.password = hash;
-                    login_params.password_type = PasswordType::SHA1;
                 } else {
                     warn!("nonce param missing!");
                 }

@@ -41,12 +41,12 @@ struct Cli {
     device_id: Option<String>,
     #[structopt(short = "-m", long = "--mount-point")]
     mount_point: Option<String>,
-    #[structopt(short, long, help = "SHV journal directory, /tmp/shvjournal/shvagent if not specified")]
-    journal_dir: Option<String>,
-    #[structopt(long, default_value = "1M", help = "SHV journal file size limit")]
-    journal_file_size: String,
-    #[structopt(long, default_value = "100M", help = "SHV journal dir size limit")]
-    journal_dir_size: String,
+    //#[structopt(short, long, help = "SHV journal directory, /tmp/shvjournal/shvagent if not specified")]
+    //journal_dir: Option<String>,
+    //#[structopt(long, default_value = "1M", help = "SHV journal file size limit")]
+    //journal_file_size: String,
+    //#[structopt(long, default_value = "100M", help = "SHV journal dir size limit")]
+    //journal_dir_size: String,
     #[structopt(short = "-v", long = "--verbose", help = "Log levels for targets, for example: rpcmsg:W or :T")]
     verbosity: Vec<String>,
     #[structopt(short, long, help = "Log levels for modules, for example: client:W or :T, default is :W if not specified")]

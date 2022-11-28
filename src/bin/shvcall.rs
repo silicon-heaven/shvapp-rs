@@ -4,7 +4,7 @@ use std::env;
 use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue};
 
 use shvapp::{Connection, DEFAULT_PORT};
-use shvapp::client::ConnectionParams;
+use shvapp::client::{LoginParams};
 
 use log::{warn, info};
 // use log::debug;
@@ -13,19 +13,18 @@ use async_std::{
     net::TcpStream,
     task,
 };
+use async_std::os::unix::net::UnixStream;
+use chainpack::rpcframe::Protocol;
 use shvlog::LogConfig;
+use url::Url;
+use percent_encoding::percent_decode;
+use shvapp::AsyncRWBox;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
 struct Cli {
-    #[structopt(name = "hostname", short = "-s", long = "--host", default_value = "127.0.0.1")]
-    host: String,
-    #[structopt(short = "-p", long = "--port", default_value = DEFAULT_PORT)]
-    port: u16,
-    #[structopt(short = "-u", long = "--user")]
-    user: String,
-    #[structopt(long = "--password")]
-    password: String,
+    #[structopt(name = "url", short = "-s", long = "--url", default_value = "", help = "Url to connect to, example tcp://localhost:3755, localsocket:path/to/socket")]
+    url: String,
     #[structopt(long = "--path")]
     path: String,
     #[structopt(long = "--method")]
@@ -59,14 +58,32 @@ async fn try_main() -> shvapp::Result<()> {
     log::info!("Verbosity levels: {}", verbosity_string);
 
     // let rpc_timeout = Duration::from_millis(DEFAULT_RPC_TIMEOUT_MSEC);
-    let connection_params = ConnectionParams::new(&cli.host, cli.port, &cli.user, &cli.password);
+    let url = Url::parse(&cli.url)?;
+    let password = percent_decode(url.password().unwrap_or("").as_bytes()).decode_utf8()?;
+    let login_params = LoginParams{
+        user: url.username().to_string(),
+        password: password.to_string(),
+        ..Default::default()
+    };
 
     // Establish a connection
-    let addr = format!("{}:{}", connection_params.host, connection_params.port);
-    info!("connecting to: {}", addr);
-    let stream = TcpStream::connect(&addr).await?;
-    info!("connected to: {}", addr);
-    let (mut connection, mut client) = Connection::new(stream, connection_params.protocol);
+    let stream: AsyncRWBox = match url.scheme().as_bytes() {
+        b"tcp" => {
+            let host = format!("{}:{}", url.host().unwrap_or(url::Host::Domain("localhost")), url.port().unwrap_or(DEFAULT_PORT));
+            info!("connecting to host: {}", host);
+            Box::new(TcpStream::connect(&host).await?)
+        }
+        b"localsocket" => {
+            let path = url.path();
+            info!("connecting to local domain socket: {}", &path);
+            Box::new(UnixStream::connect(&path).await?)
+        }
+        sch => {
+            return Err(format!("Invalid scheme: {:?}", sch).into())
+        }
+    };
+    info!("connected Ok");
+    let (mut connection, mut client) = Connection::new(stream, Protocol::ChainPack);
 
     // This is necessary in order to receive messages
     task::spawn(async move {
@@ -78,7 +95,8 @@ async fn try_main() -> shvapp::Result<()> {
         }
     });
 
-    client.login(&connection_params).await?;
+    info!("login params: {:?}", &login_params);
+    client.login(&login_params).await?;
 
     let params = cli.params.and_then(|p| Some(RpcValue::from_cpon(&p).unwrap()));
     let msg = RpcMessage::create_request(&cli.path, &cli.method, params);
