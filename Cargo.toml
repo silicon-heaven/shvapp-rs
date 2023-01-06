@@ -33,10 +33,10 @@ hex = "0.4.2"
 #lz4-compress = "0.1.1"
 lz-fear = "0.1.1"
 
-#shvlog = { git = "https://github.com/silicon-heaven/shvlog-rs", branch = "master" }
-shvlog = { path = "../shvlog-rs" }
-#chainpack = { git = "https://github.com/silicon-heaven/chainpack-rs", branch = "master" }
-chainpack = { path = "../chainpack-rs" }
+shvlog = { git = "https://github.com/silicon-heaven/shvlog-rs", branch = "master" }
+#shvlog = { path = "../shvlog-rs" }
+chainpack = { git = "https://github.com/silicon-heaven/chainpack-rs", branch = "master" }
+#chainpack = { path = "../chainpack-rs" }
 
 [[bin]]
 name = "shvagent"
