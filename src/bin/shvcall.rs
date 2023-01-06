@@ -23,17 +23,17 @@ use shvapp::AsyncRWBox;
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
 struct Cli {
-    #[structopt(name = "url", short = "-s", long = "--url", default_value = "", help = "Url to connect to, example tcp://localhost:3755, localsocket:path/to/socket")]
+    #[structopt(name = "url", short = "-s", long = "--url", help = "Url to connect to, example tcp://localhost:3755, localsocket:path/to/socket")]
     url: String,
-    #[structopt(long = "--path")]
+    #[structopt(short = "-p", long = "--path")]
     path: String,
-    #[structopt(long = "--method")]
+    #[structopt(short = "-m", long = "--method")]
     method: String,
-    #[structopt(long = "--params")]
+    #[structopt(short = "-a", long = "--params")]
     params: Option<String>,
     #[structopt(short = "-v", long = "--verbose", help = "Log levels for targets, for example: rpcmsg:W or :T")]
     verbosity: Vec<String>,
-    #[structopt(short, long, help = "Log levels for modules, for example: client:W or :T, default is :W if not specified")]
+    #[structopt(short = "-d", help = "Log levels for modules, for example: client:W or :T, default is :W if not specified")]
     debug: Vec<String>,
     #[structopt(short = "-x", long = "--chainpack", help = "Output as Chainpack instead of default CPON")]
     chainpack: bool,
@@ -98,7 +98,15 @@ async fn try_main() -> shvapp::Result<()> {
     info!("login params: {:?}", &login_params);
     client.login(&login_params).await?;
 
-    let params = cli.params.and_then(|p| Some(RpcValue::from_cpon(&p).unwrap()));
+    let params = match cli.params {
+        None => None,
+        Some(p) => {
+            match RpcValue::from_cpon(&p) {
+                Ok(p) => Some(p),
+                Err(e) => return Err(format!("Invalid SHV call parameter: {}, error: {}", &p, e).into()),
+            }
+        },
+    };
     let msg = RpcMessage::create_request(&cli.path, &cli.method, params);
     let request_id = msg.request_id();
     client.send_message(&msg).await?;
