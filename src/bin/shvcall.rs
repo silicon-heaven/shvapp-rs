@@ -63,6 +63,7 @@ async fn try_main() -> shvapp::Result<()> {
     let login_params = LoginParams{
         user: url.username().to_string(),
         password: password.to_string(),
+        heartbeat_interval: None,
         ..Default::default()
     };
 
