@@ -1,28 +1,26 @@
 use chainpack::rpcframe::{RpcFrame, Protocol};
 use crate::client::{Client};
+use crate::client2::{Client2};
 use bytes::{Buf, BytesMut};
 use chainpack::{ChainPackWriter, Writer, CponWriter};
 use log::{debug, error};
 use async_std::{
-    channel::{Receiver},
+    channel::{Receiver, Sender},
     // io::{stdin, BufReader, BufWriter},
     prelude::*,
     // task,
 };
 use futures::{select, FutureExt, AsyncWrite, AsyncRead};
 use async_broadcast::{broadcast};
+use async_std::channel::bounded;
 
 enum LogFramePrompt {
     Send,
     Receive,
 }
 
-pub trait AsyncRW: AsyncRead + AsyncWrite {}
-impl<T> AsyncRW for T where T: AsyncRead + AsyncWrite {}
 
-pub type AsyncRWBox = Box<dyn AsyncRW + Unpin + Send>;
 
-//#[derive(Debug)]
 pub struct Connection {
     stream: AsyncRWBox,
     // The buffer for reading frames.
@@ -32,21 +30,16 @@ pub struct Connection {
     // we cannot use async-std MPMC channel because only one receiver is notified here
     // and we need to broadcast message to all the clients
     // https://docs.rs/async-broadcast/latest/async_broadcast/#difference-with-async-channel
-    to_client: async_broadcast::Sender<RpcFrame>,
+    to_client: Sender<RpcFrame>,
 }
 
 impl Connection {
     pub fn new(stream: AsyncRWBox, protocol: Protocol) -> (Connection, Client) {
-        // to_client_capacity 1 should be sufficient, the socket reader will be blocked
-        // if the channel will be full (in case of async_broadcast implementation).
-        // If some client will not read receive end, then whole app will be blocked !!!
-        // BUT the login function makes 2 RPC calls on self clones (because of RPC timeout, see Client::call_rpc_method),
-        // this is why capacity must be >= 2
-        const TO_CLIENT_CHANNEL_CAPACITY: usize = 2;
+        const TO_CLIENT_CHANNEL_CAPACITY: usize = 16;
         const FROM_CLIENT_CHANNEL_CAPACITY: usize = 256;
-        let (from_client_sender, from_client_receiver) = async_std::channel::bounded(FROM_CLIENT_CHANNEL_CAPACITY);
-        let (mut to_client_sender, to_client_receiver) = broadcast(TO_CLIENT_CHANNEL_CAPACITY);
-        to_client_sender.set_overflow(true);
+        let (from_client_sender, from_client_receiver) = bounded(FROM_CLIENT_CHANNEL_CAPACITY);
+        let (to_client_sender, to_client_receiver) = bounded(TO_CLIENT_CHANNEL_CAPACITY);
+        let (to_slot_sender, from_slot_receiver) = bounded(1);
         (
             Connection {
                 stream,
@@ -59,7 +52,10 @@ impl Connection {
             Client {
                 sender: from_client_sender,
                 receiver: to_client_receiver,
-                protocol
+                protocol,
+                handlers: vec![],
+                slot_sender: to_slot_sender,
+                slot_receiver: from_slot_receiver,
             }
         )
     }
@@ -83,7 +79,7 @@ impl Connection {
                                         //if self.to_client.is_full() {
                                         //    error!("sender is full, capacity: {}", self.to_client.capacity());
                                         //}
-                                        self.to_client.broadcast(frame).await?;
+                                        self.to_client.send(frame).await?;
                                         debug!("{} ............ SENT", frame_cnt);
                                         frame_cnt += 1;
                                     }

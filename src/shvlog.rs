@@ -48,6 +48,7 @@ pub enum LogRecordColumn {
 }
 
 bitflags! {
+    #[derive(Debug, Clone)]
     pub struct EntryValueFlags: u8 {
         const SNAPSHOT     = 0b00000001;
         const SPONTANEOUS  = 0b00000010;

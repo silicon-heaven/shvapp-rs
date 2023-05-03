@@ -3,8 +3,9 @@ pub use connection::Connection;
 // pub use connection::AsyncRW;
 pub use connection::AsyncRWBox;
 
-mod connection;
+pub mod connection;
 pub mod client;
+pub mod client2;
 
 pub mod utils;
 pub mod shvtree;
