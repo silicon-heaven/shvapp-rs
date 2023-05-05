@@ -7,8 +7,7 @@ use chainpack::rpcmessage::{RpcError, RpcErrorCode};
 use chainpack::rpcvalue::List;
 use chainpack::metamethod::{MetaMethod};
 
-use shvapp::{Connection, DEFAULT_PORT, shvjournal};
-use shvapp::client::{ConnectionParams};
+use shvapp::{AsyncRWBox, Connection, shvjournal};
 use shvapp::shvtree::{ShvTree, ShvNode, ProcessRequestResult, RpcResponseSender};
 use shvapp::shvfsnode::FSDirNode;
 
@@ -24,19 +23,20 @@ use async_std::{
     // future,
 };
 use futures::FutureExt;
+use percent_encoding::percent_decode;
 use shvlog::LogConfig;
+use url::Url;
+use shvapp::client::LoginParams;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "shvagent", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "SHV Agent")]
 struct Cli {
-    #[structopt(name = "hostname", short = "-s", long = "--host", default_value = "127.0.0.1")]
-    host: String,
-    #[structopt(short = "-p", long = "--port", default_value = DEFAULT_PORT)]
-    port: u16,
-    #[structopt(short = "-u", long = "--user")]
-    user: String,
-    #[structopt(long = "--password")]
-    password: String,
+    #[structopt(name = "url", short = "-s", long = "--url", help = "Url to connect to, example tcp://localhost:3755, localsocket:path/to/socket")]
+    url: String,
+    //#[structopt(short = "-u", long = "--user")]
+    //user: String,
+    //#[structopt(long = "--password")]
+    //password: String,
     #[structopt(long = "--device-id")]
     device_id: Option<String>,
     #[structopt(short = "-m", long = "--mount-point")]
@@ -91,17 +91,24 @@ async fn try_main() -> shvapp::Result<()> {
     //log::debug!("debug");
     //log::trace!("trace");
 
-    let device_id = cli.device_id.unwrap_or("".into());
+    let url = Url::parse(&cli.url)?;
+    let password = percent_decode(url.password().unwrap_or("").as_bytes()).decode_utf8()?;
+    let login_params = LoginParams{
+        user: url.username().to_string(),
+        password: password.to_string(),
+        heartbeat_interval: None,
+        device_id: cli.device_id.unwrap_or("".into()),
+        mount_point: cli.mount_point.unwrap_or("".to_string()),
+        ..Default::default()
+    };
+
     // Get the remote address to connect to
     // let rpc_timeout = Duration::from_millis(DEFAULT_RPC_TIMEOUT_MSEC);
-    let mut connection_params = ConnectionParams::new(&cli.host, cli.port, &cli.user, &cli.password);
-    connection_params.device_id = device_id.to_string();
-    connection_params.mount_point = cli.mount_point.unwrap_or("".to_string());
 
     let mut shv_tree = ShvTree::new();
     shv_tree.add_node("", Box::new(DeviceNode {
             app_name: "ShvAgent".into(),
-            device_id,
+            device_id: (&login_params).device_id.clone(),
             rpc_sender: shv_tree.response_sender.clone(),
         }));
     //let exported_dir = dirs::home_dir();
@@ -112,11 +119,11 @@ async fn try_main() -> shvapp::Result<()> {
     }
     loop {
         // Establish a connection
-        let addr = format!("{}:{}", connection_params.host, connection_params.port);
+        let addr = format!("{:?}:{:?}", url.host(), url.port());
         info!("connecting to: {}", addr);
-        let stream = TcpStream::connect(&addr).await?;
+        let stream: AsyncRWBox = Box::new(TcpStream::connect(&addr).await?);
         info!("connected to: {}", addr);
-        let (mut connection, mut client) = Connection::new(stream, connection_params.protocol);
+        let (mut connection, mut client) = Connection::new(stream);
         task::spawn(async move {
             info!("Spawning connection message loop");
             match connection.exec().await {
@@ -128,9 +135,9 @@ async fn try_main() -> shvapp::Result<()> {
                 }
             }
         });
-        match client.login(&connection_params).await {
+        match client.login(&login_params).await {
             Ok(_) => {
-                if let Some(heartbeat_interval) = connection_params.heartbeat_interval {
+                if let Some(heartbeat_interval) = login_params.heartbeat_interval {
                     client.spawn_ping_task(heartbeat_interval);
                 }
                 //let fut_client = client.receive_message();
