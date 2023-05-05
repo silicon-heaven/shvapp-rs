@@ -14,7 +14,6 @@ use async_std::{
     task,
 };
 use async_std::os::unix::net::UnixStream;
-use chainpack::rpcframe::Protocol;
 use shvlog::LogConfig;
 use url::Url;
 use percent_encoding::percent_decode;
@@ -84,7 +83,7 @@ async fn try_main() -> shvapp::Result<()> {
         }
     };
     info!("connected Ok");
-    let (mut connection, mut client) = Connection::new(stream, Protocol::ChainPack);
+    let (mut connection, mut client) = Connection::new(stream);
 
     // This is necessary in order to receive messages
     task::spawn(async move {

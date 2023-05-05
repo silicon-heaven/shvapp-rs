@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use chainpack::rpcframe::{RpcFrame, Protocol};
 use crate::client::{Client};
 use bytes::{Buf, BytesMut};
@@ -10,7 +11,6 @@ use async_std::{
     // task,
 };
 use futures::{select, FutureExt, AsyncWrite, AsyncRead};
-use async_broadcast::{broadcast};
 
 enum LogFramePrompt {
     Send,
@@ -32,20 +32,20 @@ pub struct Connection {
     // we cannot use async-std MPMC channel because only one receiver is notified here
     // and we need to broadcast message to all the clients
     // https://docs.rs/async-broadcast/latest/async_broadcast/#difference-with-async-channel
-    to_client: async_broadcast::Sender<RpcFrame>,
+    to_client: async_broadcast::Sender<Arc<RpcFrame>>,
 }
 
 impl Connection {
-    pub fn new(stream: AsyncRWBox, protocol: Protocol) -> (Connection, Client) {
+    pub fn new(stream: AsyncRWBox) -> (Connection, Client) {
         // to_client_capacity 1 should be sufficient, the socket reader will be blocked
         // if the channel will be full (in case of async_broadcast implementation).
         // If some client will not read receive end, then whole app will be blocked !!!
         // BUT the login function makes 2 RPC calls on self clones (because of RPC timeout, see Client::call_rpc_method),
         // this is why capacity must be >= 2
-        const TO_CLIENT_CHANNEL_CAPACITY: usize = 2;
+        const TO_CLIENT_CHANNEL_CAPACITY: usize = 256;
         const FROM_CLIENT_CHANNEL_CAPACITY: usize = 256;
         let (from_client_sender, from_client_receiver) = async_std::channel::bounded(FROM_CLIENT_CHANNEL_CAPACITY);
-        let (mut to_client_sender, to_client_receiver) = broadcast(TO_CLIENT_CHANNEL_CAPACITY);
+        let (mut to_client_sender, to_client_receiver) = async_broadcast::broadcast(TO_CLIENT_CHANNEL_CAPACITY);
         to_client_sender.set_overflow(true);
         (
             Connection {
@@ -59,7 +59,7 @@ impl Connection {
             Client {
                 sender: from_client_sender,
                 receiver: to_client_receiver,
-                protocol
+                protocol: Protocol::ChainPack,
             }
         )
     }
@@ -83,7 +83,7 @@ impl Connection {
                                         //if self.to_client.is_full() {
                                         //    error!("sender is full, capacity: {}", self.to_client.capacity());
                                         //}
-                                        self.to_client.broadcast(frame).await?;
+                                        self.to_client.broadcast(Arc::new(frame)).await?;
                                         debug!("{} ............ SENT", frame_cnt);
                                         frame_cnt += 1;
                                     }

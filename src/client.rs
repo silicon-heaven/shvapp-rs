@@ -1,5 +1,6 @@
 //! Minimal shv client implementation
 
+use std::sync::Arc;
 use crate::RpcFrame;
 
 use async_std::{channel::Sender, future, task};
@@ -98,7 +99,7 @@ impl ConnectionParams {
 }
 */
 pub type ClientTx = Sender<RpcFrame>;
-pub type ClientRx = async_broadcast::Receiver<RpcFrame>;
+pub type ClientRx = async_broadcast::Receiver<Arc<RpcFrame>>;
 
 #[derive(Clone)]
 pub struct ClientSender {
@@ -203,11 +204,11 @@ impl Client {
             Duration::from_millis(DEFAULT_RPC_CALL_TIMEOUT_MS),
             async move {
                 loop {
-                    let resp = client.receive_message().await?;
-                    trace!(target: "rpcmsg", "{} maybe response: {}", rq_id, resp);
-                    if let Some(id) = resp.request_id() {
+                    let frame = client.receive_frame().await?;
+                    trace!(target: "rpcmsg", "{} maybe response: {}", rq_id, frame);
+                    if let Some(id) = frame.request_id() {
                         if id == rq_id {
-                            //let resp = resp.clone();
+                            let resp = frame.to_rpcmesage()?;
                             trace!("{} .............. got response: {}", rq_id, resp);
                             return Ok(resp);
                         }
@@ -229,7 +230,7 @@ impl Client {
         self.sender.send(frame).await?;
         Ok(())
     }
-    pub async fn receive_frame(&mut self) -> crate::Result<RpcFrame> {
+    pub async fn receive_frame(&mut self) -> crate::Result<Arc<RpcFrame>> {
         let frame = self.receiver.recv().await?;
         Ok(frame)
     }
