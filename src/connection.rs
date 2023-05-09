@@ -3,7 +3,7 @@ use chainpack::rpcframe::{RpcFrame, Protocol};
 use crate::client::{Client};
 use bytes::{Buf, BytesMut};
 use chainpack::{ChainPackWriter, Writer, CponWriter};
-use log::{debug, error};
+use log::{debug, info, error};
 use async_std::{
     channel::{Receiver},
     // io::{stdin, BufReader, BufWriter},
@@ -93,14 +93,14 @@ impl Connection {
                                     }
                                 }
                                 Err(e) => {
-                                    error!("read frame error {}", e);
+                                    error!("read frame error: {}", e);
                                     break;
                                 }
                             }
                         }
                     },
                     Err(e) => {
-                        error!("read socket error {}", e);
+                        error!("read socket error: {}", e);
                     },
                 },
                 frame = self.from_client.recv().fuse() => match frame {
@@ -108,8 +108,10 @@ impl Connection {
                         debug!("Frame to send from client: {}", &frame);
                         self.send_frame(&frame).await?;
                     }
-                    Err(e) => {
-                        error!("read frame error {}", e);
+                    Err(_e) => {
+                        //error!("read frame error: {}", e);
+                        info!("Client channel closed");
+                        break Ok(());
                     },
                 }
             }

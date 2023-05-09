@@ -1,7 +1,7 @@
 use async_std::{io,prelude::*};
 use structopt::StructOpt;
 use std::env;
-use chainpack::{RpcMessage, RpcMessageMetaTags, RpcValue};
+use chainpack::{RpcMessage, RpcValue};
 
 use shvapp::{Connection, DEFAULT_PORT};
 use shvapp::client::{LoginParams};
@@ -107,22 +107,16 @@ async fn try_main() -> shvapp::Result<()> {
             }
         },
     };
-    let msg = RpcMessage::create_request(&cli.path, &cli.method, params);
-    let request_id = msg.request_id();
-    client.send_message(&msg).await?;
-
-    while let Ok(response) = client.receive_message().await {
-        if response.request_id() == request_id {
-            let mut stdout = io::stdout();
-            let response_bytes = if cli.chainpack {
-                response.as_rpcvalue().to_chainpack()
-            } else {
-                response.to_cpon().into_bytes()
-            };
-            stdout.write_all(&response_bytes).await?;
-            stdout.flush().await?;
-            break;
-        }
-    }
+    let resp = client
+        .call_rpc_method(RpcMessage::create_request(&cli.path, &cli.method, params))
+        .await?;
+    let mut stdout = io::stdout();
+    let response_bytes = if cli.chainpack {
+        resp.as_rpcvalue().to_chainpack()
+    } else {
+        resp.to_cpon().into_bytes()
+    };
+    stdout.write_all(&response_bytes).await?;
+    stdout.flush().await?;
     Ok(())
 }
